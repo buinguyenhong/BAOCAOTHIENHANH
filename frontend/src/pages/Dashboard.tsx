@@ -70,7 +70,7 @@ export const Dashboard: React.FC = () => {
     setExporting(true);
     try {
       const fileName = `${selectedReport.name.replace(/[^a-zA-Z0-9\u00C0-\u024F ]/g, '')}_${new Date().toISOString().split('T')[0]}.xlsx`;
-      await exportReport(selectedReport.id, result.rows, paramValues, fileName);
+      await exportReport(selectedReport.id, { recordsets: result.recordsets || [result.rows] }, paramValues, fileName);
       success(`Đã xuất ${fileName}`);
     } catch (err: any) {
       showError(err.message || 'Lỗi xuất file');

@@ -92,7 +92,7 @@ export const SystemConfig: React.FC = () => {
 
           {/* Connection Status */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 shrink-0">
-            <ConnectionBadge ok={status?.configDB || false} label="ConfigDB (HIS Reports)" />
+            <ConnectionBadge ok={status?.configDB || false} label="ConfigDB (SQLite)" />
             <ConnectionBadge ok={status?.hospitalDB || false} label="HospitalDB (Cơ sở dữ liệu HIS)" />
           </div>
 
@@ -151,7 +151,7 @@ export const SystemConfig: React.FC = () => {
                 <p className="text-blue-500 text-xs mt-1">
                   Database lưu cấu hình báo cáo, users, và phân quyền.
                   <br />
-                  Server: <code className="bg-blue-100 px-1 rounded">localhost</code> (xem .env)
+                  Storage: <code className="bg-blue-100 px-1 rounded">backend/data/hisreports.db</code> (SQLite)
                 </p>
               </div>
               <div>

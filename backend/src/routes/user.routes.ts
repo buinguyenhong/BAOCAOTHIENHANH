@@ -51,7 +51,7 @@ router.post(
         'CREATE_USER',
         req.user!.userId,
         username,
-        req.ip,
+        req.ip ?? null,
         `Tạo user ${username} với role ${role || 'user'}`
       );
 
@@ -82,11 +82,11 @@ router.put(
       const { fullName, role, isActive } = req.body;
 
       // Không cho phép tự sửa role của chính mình thành non-admin
-      if (req.params.id === req.user!.userId && role && role !== 'admin') {
+      if ((req.params.id as string) === req.user!.userId && role && role !== 'admin') {
         return res.status(400).json({ success: false, error: 'Không thể hạ role của chính mình' });
       }
 
-      const updated = await authService.updateUser(req.params.id, { fullName, role, isActive });
+      const updated = await authService.updateUser((req.params.id as string), { fullName, role, isActive });
       if (!updated) {
         return res.status(404).json({ success: false, error: 'Không tìm thấy user' });
       }
@@ -95,7 +95,7 @@ router.put(
         'UPDATE_USER',
         req.user!.userId,
         updated.username,
-        req.ip,
+        req.ip ?? null,
         `Cập nhật: fullName=${fullName}, role=${role}, isActive=${isActive}`
       );
 
@@ -128,18 +128,18 @@ router.post(
         return res.status(400).json({ success: false, error: 'Password phải có ít nhất 6 ký tự' });
       }
 
-      const user = await authService.findById(req.params.id);
+      const user = await authService.findById((req.params.id as string));
       if (!user) {
         return res.status(404).json({ success: false, error: 'Không tìm thấy user' });
       }
 
-      await authService.resetPassword(req.params.id, newPassword);
+      await authService.resetPassword((req.params.id as string), newPassword);
 
       await auditService.log(
         'UPDATE_USER',
         req.user!.userId,
         user.username,
-        req.ip,
+        req.ip ?? null,
         'Reset password'
       );
 
@@ -157,22 +157,22 @@ router.delete(
   adminMiddleware,
   async (req: AuthRequest, res: Response) => {
     try {
-      if (req.params.id === req.user!.userId) {
+      if ((req.params.id as string) === req.user!.userId) {
         return res.status(400).json({ success: false, error: 'Không thể xóa chính mình' });
       }
 
-      const user = await authService.findById(req.params.id);
+      const user = await authService.findById((req.params.id as string));
       if (!user) {
         return res.status(404).json({ success: false, error: 'Không tìm thấy user' });
       }
 
-      await authService.deleteUser(req.params.id);
+      await authService.deleteUser((req.params.id as string));
 
       await auditService.log(
         'DELETE_USER',
         req.user!.userId,
         user.username,
-        req.ip,
+        req.ip ?? null,
         null
       );
 
@@ -190,7 +190,7 @@ router.get(
   adminMiddleware,
   async (req: AuthRequest, res: Response) => {
     try {
-      const perms = await reportService.getUserPermissions(req.params.id);
+      const perms = await reportService.getUserPermissions((req.params.id as string));
       res.json({ success: true, data: perms });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
@@ -214,22 +214,22 @@ router.put(
       }
 
       for (const perm of permissions) {
-        await reportService.setUserReportPermission(req.params.id, perm.reportId, {
+        await reportService.setUserReportPermission((req.params.id as string), perm.reportId, {
           canView: perm.canView,
           canExport: perm.canExport,
         });
       }
 
-      const user = await authService.findById(req.params.id);
+      const user = await authService.findById((req.params.id as string));
       await auditService.log(
         'SET_PERMISSION',
         req.user!.userId,
-        user?.username,
-        req.ip,
+        user?.username ?? null,
+        req.ip ?? null,
         `Cập nhật ${permissions.length} quyền báo cáo`
       );
 
-      const updated = await reportService.getUserPermissions(req.params.id);
+      const updated = await reportService.getUserPermissions((req.params.id as string));
       res.json({ success: true, data: updated });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
@@ -256,7 +256,7 @@ router.post(
         'SET_PERMISSION',
         req.user!.userId,
         'Bulk assign',
-        req.ip,
+        req.ip ?? null,
         `${userIds.length} users × ${reportIds.length} reports`
       );
 

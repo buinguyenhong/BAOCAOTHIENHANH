@@ -17,7 +17,7 @@ export const checkReportView = () => {
     }
 
     try {
-      const perm = await reportService.checkPermission(req.user.userId, reportId, req.user.role);
+      const perm = await reportService.checkPermission(req.user.userId, reportId as string, req.user.role);
       if (!perm.canView) {
         res.status(403).json({ success: false, error: 'Bạn không có quyền xem báo cáo này' });
         return;
@@ -44,7 +44,7 @@ export const checkReportExport = () => {
     }
 
     try {
-      const perm = await reportService.checkPermission(req.user.userId, reportId, req.user.role);
+      const perm = await reportService.checkPermission(req.user.userId, reportId as string, req.user.role);
       if (!perm.canExport) {
         res.status(403).json({ success: false, error: 'Bạn không có quyền xuất báo cáo này' });
         return;

@@ -9,7 +9,7 @@ import { Modal } from '../components/ui/Modal';
 import { EmptyState, Badge } from '../components/ui/Card';
 import { useToast } from '../contexts/ToastContext';
 import { adminReportApi, systemApi } from '../api/report.api';
-import type { Report, ReportGroup, SPMetadata, CreateReportDto, CreateParamDto, CreateMappingDto, ReportParameter, ReportMapping } from '../types';
+import type { Report, ReportGroup, SPMetadata, CreateReportDto, CreateParamDto, CreateMappingDto, ReportParameter, ReportMapping, TestRunResult } from '../types';
 
 const DEFAULT_GROUPS = [
   { value: 'Tổng hợp', label: '📂 Tổng hợp' },
@@ -35,7 +35,7 @@ export const ReportDesigner: React.FC = () => {
   // Form state
   const [showForm, setShowForm] = useState(false);
   const [editingReport, setEditingReport] = useState<Report | null>(null);
-  const [activeTab, setActiveTab] = useState<'info' | 'params' | 'mapping'>('info');
+  const [activeTab, setActiveTab] = useState<'info' | 'params' | 'mapping' | 'template'>('info');
 
   // Form data
   const [formName, setFormName] = useState('');
@@ -45,7 +45,15 @@ export const ReportDesigner: React.FC = () => {
   const [formDesc, setFormDesc] = useState('');
   const [formParams, setFormParams] = useState<CreateParamDto[]>([]);
   const [formMappings, setFormMappings] = useState<CreateMappingDto[]>([]);
+  const [allResultSetMappings, setAllResultSetMappings] = useState<Record<number, CreateMappingDto[]>>({});
   const [spMetadata, setSpMetadata] = useState<SPMetadata | null>(null);
+  const [formTemplateFile, setFormTemplateFile] = useState<string>('');
+  const [templatePreview, setTemplatePreview] = useState<string>('');
+  const [testRunResult, setTestRunResult] = useState<TestRunResult | null>(null);
+  const [selectedResultSet, setSelectedResultSet] = useState(0);
+  const [availableSheets, setAvailableSheets] = useState<string[]>([]);
+  const [testRunning, setTestRunning] = useState(false);
+  const [testRunError, setTestRunError] = useState<string>('');
 
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -112,7 +120,7 @@ export const ReportDesigner: React.FC = () => {
               paramType: inferParamType(p.type, p.name),
               isRequired: !p.hasDefaultValue && p.isNullable === false,
               displayOrder: idx + 1,
-              options: null,
+              options: undefined,
             }));
             setFormParams(autoParams);
           }
@@ -147,6 +155,68 @@ export const ReportDesigner: React.FC = () => {
     return 'text';
   };
 
+  const fileToBase64 = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+
+  // Chạy thử SP - lấy columns + sample rows + params từ backend
+  const handleTestRun = async () => {
+    if (!formSpName) return;
+    setTestRunning(true);
+    setTestRunError('');
+    setTestRunResult(null);
+    setSelectedResultSet(0); // reset về result set đầu tiên
+    try {
+      // Lấy params từ form (chỉ gửi params có giá trị)
+      const params: Record<string, any> = {};
+      for (const p of formParams) {
+        if (p.paramName && p.defaultValue !== undefined && p.defaultValue !== null && p.defaultValue !== '') {
+          params[p.paramName] = p.defaultValue;
+        }
+      }
+
+      const res = await systemApi.testRun(formSpName, params);
+      if (res.success && res.data) {
+        const result: TestRunResult = {
+          columns: res.data.columns,
+          rows: res.data.rows,
+          params: res.data.params || [],
+          recordsets: res.data.recordsets || [res.data.rows],
+        };
+        setTestRunResult(result);
+        setSelectedResultSet(0); // reset về result set đầu tiên
+
+        // Auto-generate mappings cho TẤT CẢ result sets
+        const allMappings: Record<number, CreateMappingDto[]> = {};
+        result.recordsets.forEach((rs, rsIdx) => {
+          if (rs.length === 0) { allMappings[rsIdx] = []; return; }
+          const cols = Object.keys(rs[0]);
+          if (cols.length === 0) { allMappings[rsIdx] = []; return; }
+          allMappings[rsIdx] = cols.map((col: string, idx: number) => ({
+            fieldName: col,
+            cellAddress: `A${10 + idx}`,
+            mappingType: 'list' as const,
+            displayOrder: idx + 1,
+            sheetName: availableSheets[0] || undefined,
+            resultSetIndex: rsIdx, // Lưu index của result set
+          }));
+        });
+        setAllResultSetMappings(allMappings);
+        setFormMappings(allMappings[0] || []);
+      } else {
+        setTestRunError(res.error || 'Không có kết quả');
+      }
+    } catch (err: any) {
+      setTestRunError(err.response?.data?.error || err.message);
+    } finally {
+      setTestRunning(false);
+    }
+  };
+
   const openNewForm = () => {
     setEditingReport(null);
     setFormName('');
@@ -156,7 +226,14 @@ export const ReportDesigner: React.FC = () => {
     setFormDesc('');
     setFormParams([]);
     setFormMappings([]);
+    setAllResultSetMappings({});
     setSpMetadata(null);
+    setFormTemplateFile('');
+    setTemplatePreview('');
+    setTestRunResult(null);
+    setTestRunError('');
+    setSelectedResultSet(0);
+    setAvailableSheets([]);
     setActiveTab('info');
     setShowForm(true);
   };
@@ -185,8 +262,15 @@ export const ReportDesigner: React.FC = () => {
         cellAddress: m.cellAddress || '',
         mappingType: m.mappingType,
         displayOrder: m.displayOrder,
+        sheetName: m.sheetName || undefined,
       }))
     );
+    setFormTemplateFile(report.templateFile || '');
+    setTemplatePreview('');
+    setTestRunResult(null);
+    setTestRunError('');
+    setSelectedResultSet(0);
+    setAvailableSheets([]);
     setActiveTab('info');
     setShowForm(true);
   };
@@ -206,8 +290,15 @@ export const ReportDesigner: React.FC = () => {
         spName: formSpName,
         description: formDesc,
         parameters: formParams.filter((p) => p.paramName),
-        mappings: formMappings.filter((m) => m.fieldName),
+        // Merge all result set mappings
+        mappings: Object.values(allResultSetMappings).flat().filter((m) => m.fieldName),
       };
+
+      // Upload template if selected
+      if (formTemplateFile && templatePreview) {
+        payload.templateFile = formTemplateFile;
+        payload.templateData = templatePreview;
+      }
 
       if (editingReport) {
         await adminReportApi.updateReport(editingReport.id, payload);
@@ -245,7 +336,17 @@ export const ReportDesigner: React.FC = () => {
   };
 
   const updateMapping = (idx: number, updates: Partial<CreateMappingDto>) => {
+    // Cập nhật formMappings (mapping đang hiển thị)
     setFormMappings((prev) => prev.map((m, i) => (i === idx ? { ...m, ...updates } : m)));
+    // Cập nhật allResultSetMappings tương ứng
+    const rsIdx = selectedResultSet;
+    setAllResultSetMappings((prev) => {
+      const updated = { ...prev };
+      if (updated[rsIdx]) {
+        updated[rsIdx] = updated[rsIdx].map((m, i) => (i === idx ? { ...m, ...updates } : m));
+      }
+      return updated;
+    });
   };
 
   return (
@@ -359,7 +460,7 @@ export const ReportDesigner: React.FC = () => {
       >
         {/* Tabs */}
         <div className="flex gap-2 mb-6 border-b border-slate-200 pb-4">
-          {(['info', 'params', 'mapping'] as const).map((tab) => (
+          {(['info', 'params', 'mapping', 'template'] as const).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -369,10 +470,133 @@ export const ReportDesigner: React.FC = () => {
                   : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
               }`}
             >
-              {tab === 'info' ? '📋 Thông tin' : tab === 'params' ? `⚙️ Tham số (${formParams.length})` : `📍 Mapping (${formMappings.length})`}
+              {tab === 'info' ? '📋 Thông tin' :
+               tab === 'params' ? `⚙️ Tham số (${formParams.length})` :
+               tab === 'mapping' ? `📍 Mapping (${formMappings.length})` :
+               formTemplateFile ? `📄 Template: ${formTemplateFile}` : '📄 Template'}
             </button>
           ))}
         </div>
+
+        {/* Toolbar: Auto detect + Test run */}
+        <div className="flex items-center gap-3 mb-6 p-4 bg-amber-50 border border-amber-200 rounded-2xl">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={async () => {
+              if (!formSpName) { showError('Chọn Stored Procedure trước'); return; }
+              setSpLoading(true);
+              try {
+                const res = await systemApi.getSPMetadata(formSpName);
+                if (res.success && res.data) {
+                  setSpMetadata(res.data);
+                  if (!editingReport || editingReport.spName !== formSpName) {
+                    const autoParams: CreateParamDto[] = (res.data.parameters || []).map((p, idx) => ({
+                      paramName: p.name,
+                      paramLabel: p.name.replace(/^@/, '').replace(/([A-Z])/g, ' $1').trim(),
+                      paramType: inferParamType(p.type || '', p.name),
+                      isRequired: !p.hasDefaultValue,
+                      displayOrder: idx + 1,
+                      options: undefined,
+                    }));
+                    const autoMappings: CreateMappingDto[] = (res.data.columns || []).map((col, idx) => ({
+                      fieldName: col.name,
+                      cellAddress: `A${10 + idx}`,
+                      mappingType: 'list',
+                      displayOrder: idx + 1,
+                      sheetName: availableSheets[0] || undefined,
+                    }));
+                    setFormParams(autoParams);
+                    setFormMappings(autoMappings);
+                    success('Đã tự động nhận diện tham số và mapping!');
+                  }
+                }
+              } catch { showError('Không lấy được metadata SP'); }
+              finally { setSpLoading(false); }
+            }}
+            icon={<span>🔍</span>}
+          >
+            Tự động detect
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleTestRun}
+            loading={testRunning}
+            icon={<span>▶️</span>}
+          >
+            Chạy thử
+          </Button>
+
+          {testRunResult && (
+            <div className="ml-auto flex items-center gap-2 text-xs text-emerald-700 font-bold">
+              <span>✅</span>
+              <span>{testRunResult.columns.length} cột · {testRunResult.rows.length} dòng</span>
+              {testRunResult.recordsets.length > 1 && (
+                <select
+                  value={selectedResultSet}
+                  onChange={(e) => {
+                    const idx = parseInt(e.target.value);
+                    setSelectedResultSet(idx);
+                    // Cập nhật preview theo recordset đã chọn
+                    const rs = testRunResult.recordsets[idx] || [];
+                    const cols = rs.length > 0 ? Object.keys(rs[0]) : [];
+                    setTestRunResult({ ...testRunResult, columns: cols, rows: rs });
+                    // Chuyển sang mappings của recordset đã chọn
+                    setFormMappings(allResultSetMappings[idx] || []);
+                    success(`Đã chọn Result ${idx + 1}: ${rs.length} dòng`);
+                  }}
+                  className="ml-2 px-2 py-1 border border-emerald-300 rounded-lg text-xs"
+                >
+                  {testRunResult.recordsets.map((_rs: any[], idx: number) => (
+                    <option key={idx} value={idx}>Result {idx + 1}</option>
+                  ))}
+                </select>
+              )}
+            </div>
+          )}
+          {testRunError && (
+            <div className="ml-auto flex items-center gap-2 text-xs text-red-600 font-bold">
+              <span>❌</span>
+              <span>{testRunError}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Test Run Preview */}
+        {testRunResult && (
+          <div className="mb-6 p-5 bg-emerald-50 border border-emerald-200 rounded-2xl overflow-auto">
+            <h4 className="text-sm font-black text-emerald-800 mb-3">
+              📊 Kết quả chạy thử — Result {selectedResultSet + 1}: {testRunResult.rows.length} dòng
+            </h4>
+            {testRunResult.recordsets.length > 1 && (
+              <p className="text-xs text-emerald-600 mb-2">
+                ⚡ SP trả về {testRunResult.recordsets.length} resultsets. Dùng dropdown bên trên để chọn result set khác.
+              </p>
+            )}
+            <div className="overflow-auto max-h-64">
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-emerald-100">
+                  <tr>
+                    {testRunResult.columns.map((col: string) => (
+                      <th key={col} className="px-3 py-2 text-left font-black text-emerald-800 border border-emerald-200 whitespace-nowrap">{col}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {testRunResult.rows.map((row: any, i: number) => (
+                    <tr key={i} className="bg-white border border-emerald-200">
+                      {testRunResult.columns.map((col: string) => (
+                        <td key={col} className="px-3 py-2 text-slate-700 whitespace-nowrap max-w-xs truncate">{String(row[col] ?? '')}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
 
         {/* Tab: Info */}
         {activeTab === 'info' && (
@@ -426,6 +650,89 @@ export const ReportDesigner: React.FC = () => {
           </div>
         )}
 
+        {/* Tab: Template */}
+        {activeTab === 'template' && (
+          <div className="space-y-5">
+            <div className="bg-blue-50 border border-blue-200 rounded-2xl p-6">
+              <h4 className="text-sm font-black text-blue-800 mb-2">📄 Tải lên file báo cáo mẫu (.xlsx)</h4>
+              <p className="text-xs text-blue-600 mb-4">
+                File mẫu sẽ được giữ nguyên header/footer, chỉ điền dữ liệu vào các ô đã mapping.
+                Mapping kiểu <strong>scalar</strong> → điền 1 ô, <strong>list</strong> → chèn dòng dữ liệu.
+              </p>
+
+              {/* Upload zone */}
+              <label className="flex flex-col items-center justify-center border-2 border-dashed border-blue-300 rounded-2xl p-8 cursor-pointer hover:bg-blue-100 transition-colors">
+                <span className="text-4xl mb-2">📁</span>
+                <p className="text-sm font-bold text-blue-700">Nhấn để chọn file .xlsx</p>
+                <p className="text-xs text-blue-400 mt-1">hoặc kéo thả file vào đây</p>
+                <input
+                  type="file"
+                  accept=".xlsx,.xls"
+                  className="hidden"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    const base64 = await fileToBase64(file);
+                    setTemplatePreview(base64);
+                    setFormTemplateFile(file.name);
+
+                    // Parse sheet names từ template file
+                    const ExcelJS = (await import('exceljs')).default;
+                    const binaryStr = atob(base64.split(',')[1]);
+                    const len = binaryStr.length;
+                    const bytes = new Uint8Array(len);
+                    for (let i = 0; i < len; i++) {
+                      bytes[i] = binaryStr.charCodeAt(i);
+                    }
+                    const wb = new ExcelJS.Workbook();
+                    await wb.xlsx.load(bytes.buffer as ArrayBuffer);
+                    setAvailableSheets(wb.worksheets.map(ws => ws.name));
+                  }}
+                />
+              </label>
+            </div>
+
+            {/* Preview */}
+            {formTemplateFile && (
+              <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <span className="text-3xl">📊</span>
+                    <div>
+                      <p className="text-sm font-bold text-emerald-800">{formTemplateFile}</p>
+                      <p className="text-xs text-emerald-500">Đã chọn — sẽ được lưu khi lưu báo cáo</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => { setFormTemplateFile(''); setTemplatePreview(''); }}
+                    className="text-red-400 hover:text-red-600 text-xl font-bold"
+                  >
+                    ×
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Mapping type reminder */}
+            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5">
+              <h4 className="text-sm font-black text-slate-700 mb-3">🔗 Cách Mapping hoạt động</h4>
+              <div className="space-y-2 text-xs text-slate-600">
+                <div className="flex items-start gap-2">
+                  <span className="font-black text-blue-600">scalar</span>
+                  <span>→ Điền giá trị vào <strong>1 ô duy nhất</strong>. VD: ngày tháng báo cáo, tên bệnh viện.</span>
+                </div>
+                <div className="flex items-start gap-2">
+                  <span className="font-black text-emerald-600">list</span>
+                  <span>→ Chèn <strong>nhiều dòng</strong> vào bảng. VD: danh sách bệnh nhân, dòng tổng cộng.</span>
+                </div>
+                <p className="mt-2 pt-2 border-t border-slate-200 text-slate-400">
+                  <strong>VD thực tế:</strong> Báo cáo "Danh sách Bệnh nhân" có template với header "Bệnh viện ABC", dòng mẫu 1 ở dòng 10 (MaBN, HoTen, NgaySinh). Khi xuất, dữ liệu sẽ được điền vào dòng 10 trở đi.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Tab: Params */}
         {activeTab === 'params' && (
           <div className="space-y-3">
@@ -435,7 +742,12 @@ export const ReportDesigner: React.FC = () => {
               formParams.map((param, idx) => (
                 <div key={idx} className="grid grid-cols-12 gap-2 items-end p-4 bg-slate-50 rounded-2xl border border-slate-200">
                   <div className="col-span-2">
-                    <Input label="Tên tham số" value={param.paramName} disabled className="bg-white" />
+                    <Input
+                      label="Tên tham số"
+                      value={param.paramName || ''}
+                      onChange={(e) => updateParam(idx, { paramName: e.target.value })}
+                      placeholder="@TenParam"
+                    />
                   </div>
                   <div className="col-span-3">
                     <Input
@@ -506,7 +818,7 @@ export const ReportDesigner: React.FC = () => {
                   <div className="col-span-4">
                     <Input label="Tên cột (Field)" value={mapping.fieldName} disabled className="bg-white uppercase" />
                   </div>
-                  <div className="col-span-4">
+                  <div className="col-span-3">
                     <Input
                       label="Ô Excel (VD: A10)"
                       value={mapping.cellAddress || ''}
@@ -515,7 +827,7 @@ export const ReportDesigner: React.FC = () => {
                       className="uppercase font-mono"
                     />
                   </div>
-                  <div className="col-span-3">
+                  <div className="col-span-2">
                     <Select
                       label="Loại mapping"
                       value={mapping.mappingType || 'list'}
@@ -525,6 +837,21 @@ export const ReportDesigner: React.FC = () => {
                         { value: 'scalar', label: '🔢 Giá trị đơn (1 ô)' },
                       ]}
                     />
+                  </div>
+                  <div className="col-span-3">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1">Sheet</label>
+                      <select
+                        value={mapping.sheetName || ''}
+                        onChange={(e) => updateMapping(idx, { sheetName: e.target.value || undefined })}
+                        className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs outline-none focus:border-blue-500"
+                      >
+                        <option value="">— Mặc định (sheet 1) —</option>
+                        {availableSheets.map((s) => (
+                          <option key={s} value={s}>{s}</option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
                   <div className="col-span-1 flex items-end justify-center pb-1">
                     <button

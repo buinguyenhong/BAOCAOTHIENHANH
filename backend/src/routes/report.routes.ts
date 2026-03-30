@@ -41,7 +41,7 @@ router.get(
   checkReportView(),
   async (req: AuthRequest, res: Response) => {
     try {
-      const report = await reportService.getReportById(req.params.id);
+      const report = await reportService.getReportById(((req.params as any).id as string));
       if (!report) {
         return res.status(404).json({ success: false, error: 'Không tìm thấy báo cáo' });
       }
@@ -64,7 +64,7 @@ router.get(
   checkReportView(),
   async (req: AuthRequest, res: Response) => {
     try {
-      const report = await reportService.getReportById(req.params.id);
+      const report = await reportService.getReportById(((req.params as any).id as string));
       if (!report) {
         return res.status(404).json({ success: false, error: 'Không tìm thấy báo cáo' });
       }
@@ -80,13 +80,13 @@ router.get(
         }
       }
 
-      const result = await reportService.executeReport(req.params.id, params);
+      const result = await reportService.executeReport(((req.params as any).id as string), params);
 
       await auditService.log(
         'RUN_REPORT',
         req.user!.userId,
         `${report.name} (${report.spName})`,
-        req.ip,
+        req.ip ?? null,
         JSON.stringify(params)
       );
 
@@ -104,22 +104,22 @@ router.post(
   checkReportExport(),
   async (req: AuthRequest, res: Response) => {
     try {
-      const report = await reportService.getReportById(req.params.id);
+      const report = await reportService.getReportById(((req.params as any).id as string));
       if (!report) {
         return res.status(404).json({ success: false, error: 'Không tìm thấy báo cáo' });
       }
 
-      const { data, params } = req.body as { data: any[]; params: Record<string, any> };
-      if (!data || !Array.isArray(data)) {
+      const { recordsets, params } = req.body as { recordsets: any[][]; params: Record<string, any> };
+      if (!recordsets || !Array.isArray(recordsets)) {
         return res.status(400).json({ success: false, error: 'Dữ liệu không hợp lệ' });
       }
 
       const fileName = `${report.name.replace(/[^a-zA-Z0-9\u00C0-\u024F ]/g, '')}_${new Date().toISOString().split('T')[0]}.xlsx`;
       const buffer = await excelService.exportReport(
-        data,
         report.mappings || [],
         report.templateFile,
         params || {},
+        recordsets,
         fileName
       );
 
@@ -127,8 +127,8 @@ router.post(
         'EXPORT_REPORT',
         req.user!.userId,
         `${report.name} (${report.spName})`,
-        req.ip,
-        `${data.length} rows`
+        req.ip ?? null,
+        `${(recordsets[0] || []).length} rows`
       );
 
       res.setHeader(
@@ -175,7 +175,7 @@ router.post(
   adminMiddleware,
   async (req: AuthRequest, res: Response) => {
     try {
-      const { name, groupName, groupIcon, spName, description, parameters, mappings } = req.body;
+      const { name, groupName, groupIcon, spName, description, parameters, mappings, templateFile, templateData } = req.body;
 
       if (!name || !spName) {
         return res.status(400).json({ success: false, error: 'Tên báo cáo và Stored Procedure là bắt buộc' });
@@ -196,19 +196,28 @@ router.post(
         await reportService.setReportMappings(report.id, mappings);
       }
 
+      // Lưu template file nếu có
+      let templateSavedPath: string | undefined;
+      if (templateFile && templateData) {
+        const buffer = Buffer.from(templateData, 'base64');
+        templateSavedPath = reportService.saveTemplate(report.id, buffer, templateFile);
+        await reportService.updateReport(report.id, { templateFile: templateSavedPath });
+      }
+
       await auditService.log(
         'CREATE_REPORT',
         req.user!.userId,
         `${name} (${spName})`,
-        req.ip,
-        null
+        req.ip ?? null,
+        templateSavedPath ? `Template: ${templateSavedPath}` : null
       );
 
       const updated = await reportService.getReportById(report.id);
       res.json({ success: true, data: updated });
     } catch (err: any) {
       console.error('Create report error:', err);
-      res.status(500).json({ success: false, error: err.message });
+      console.error('Stack:', err.stack);
+      res.status(500).json({ success: false, error: err.message || 'Lỗi không xác định' });
     }
   }
 );
@@ -220,7 +229,7 @@ router.get(
   adminMiddleware,
   async (req: AuthRequest, res: Response) => {
     try {
-      const report = await reportService.getReportById(req.params.id);
+      const report = await reportService.getReportById(((req.params as any).id as string));
       if (!report) {
         return res.status(404).json({ success: false, error: 'Không tìm thấy báo cáo' });
       }
@@ -240,7 +249,7 @@ router.put(
     try {
       const { name, groupName, groupIcon, description, templateFile, parameters, mappings } = req.body;
 
-      const updated = await reportService.updateReport(req.params.id, {
+      const updated = await reportService.updateReport(((req.params as any).id as string), {
         name,
         groupName,
         groupIcon,
@@ -250,23 +259,23 @@ router.put(
 
       // Cập nhật parameters
       if (parameters !== undefined) {
-        await reportService.setReportParameters(req.params.id, parameters);
+        await reportService.setReportParameters(((req.params as any).id as string), parameters);
       }
 
       // Cập nhật mappings
       if (mappings !== undefined) {
-        await reportService.setReportMappings(req.params.id, mappings);
+        await reportService.setReportMappings(((req.params as any).id as string), mappings);
       }
 
       await auditService.log(
         'UPDATE_REPORT',
         req.user!.userId,
-        `${updated?.name || req.params.id}`,
-        req.ip,
+        `${updated?.name || ((req.params as any).id as string)}`,
+        req.ip ?? null,
         null
       );
 
-      const result = await reportService.getReportById(req.params.id);
+      const result = await reportService.getReportById(((req.params as any).id as string));
       res.json({ success: true, data: result });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
@@ -281,14 +290,14 @@ router.delete(
   adminMiddleware,
   async (req: AuthRequest, res: Response) => {
     try {
-      const report = await reportService.getReportById(req.params.id);
-      await reportService.deleteReport(req.params.id);
+      const report = await reportService.getReportById(((req.params as any).id as string));
+      await reportService.deleteReport(((req.params as any).id as string));
 
       await auditService.log(
         'DELETE_REPORT',
         req.user!.userId,
-        `${report?.name || req.params.id}`,
-        req.ip,
+        `${report?.name || ((req.params as any).id as string)}`,
+        req.ip ?? null,
         null
       );
 
@@ -310,8 +319,8 @@ router.put(
       if (!Array.isArray(parameters)) {
         return res.status(400).json({ success: false, error: 'Parameters phải là array' });
       }
-      await reportService.setReportParameters(req.params.id, parameters);
-      const updated = await reportService.getReportParameters(req.params.id);
+      await reportService.setReportParameters(((req.params as any).id as string), parameters);
+      const updated = await reportService.getReportParameters(((req.params as any).id as string));
       res.json({ success: true, data: updated });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
@@ -330,8 +339,8 @@ router.put(
       if (!Array.isArray(mappings)) {
         return res.status(400).json({ success: false, error: 'Mappings phải là array' });
       }
-      await reportService.setReportMappings(req.params.id, mappings);
-      const updated = await reportService.getReportMappings(req.params.id);
+      await reportService.setReportMappings(((req.params as any).id as string), mappings);
+      const updated = await reportService.getReportMappings(((req.params as any).id as string));
       res.json({ success: true, data: updated });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
@@ -352,16 +361,20 @@ router.put(
         return res.status(400).json({ success: false, error: 'Thiếu file' });
       }
 
-      // Decode base64
-      const buffer = Buffer.from(fileData, 'base64');
-      const savedPath = reportService.saveTemplate(buffer, fileName);
+      const reportId = (req.params as any).id as string;
 
-      await reportService.updateReport(req.params.id, {
-        templateFile: fileName,
+      // Decode base64 và lưu file
+      const buffer = Buffer.from(fileData, 'base64');
+      const savedPath = reportService.saveTemplate(reportId, buffer, fileName);
+
+      // Cập nhật templateFile trong DB
+      await reportService.updateReport(reportId, {
+        templateFile: savedPath,
       });
 
       res.json({ success: true, message: 'Template đã được lưu', data: { fileName, path: savedPath } });
     } catch (err: any) {
+      console.error('Upload template error:', err);
       res.status(500).json({ success: false, error: err.message });
     }
   }

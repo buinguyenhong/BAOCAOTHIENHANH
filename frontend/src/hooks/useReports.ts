@@ -44,10 +44,10 @@ export const useReports = () => {
     }
   }, []);
 
-  const exportReport = useCallback(async (id: string, data: any[], params: Record<string, any>, fileName: string) => {
+  const exportReport = useCallback(async (id: string, queryResult: { recordsets: any[][] }, params: Record<string, any>, fileName: string) => {
     setLoading(true);
     try {
-      const blob = await reportApi.exportReport(id, data, params);
+      const blob = await reportApi.exportReport(id, queryResult, params);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;

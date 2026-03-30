@@ -38,6 +38,7 @@ export interface ReportMapping {
   cellAddress: string | null;
   mappingType: MappingType;
   displayOrder: number;
+  sheetName?: string | null;
 }
 
 // Report Permission
@@ -78,6 +79,7 @@ export interface ReportGroup {
 export interface QueryResult {
   columns: string[];
   rows: Record<string, any>[];
+  recordsets?: Record<string, any>[][];
 }
 
 // SP Metadata
@@ -107,6 +109,15 @@ export interface SPParameterMetadata {
 export interface SPMetadata {
   columns: SPColumnMetadata[];
   parameters: SPParameterMetadata[];
+  recordsets?: Record<string, any>[][];
+}
+
+// Test Run Result (from backend /sp-metadata/test-run)
+export interface TestRunResult {
+  columns: string[];
+  rows: Record<string, any>[];
+  params: SPParameterMetadata[];
+  recordsets: Record<string, any>[][];
 }
 
 // Connection Status
@@ -150,4 +161,6 @@ export interface CreateMappingDto {
   cellAddress?: string;
   mappingType?: MappingType;
   displayOrder?: number;
+  sheetName?: string;
+  resultSetIndex?: number; // Index của result set (0, 1, 2...)
 }

@@ -41,12 +41,12 @@ export const reportApi = {
   // Export Excel
   exportReport: async (
     id: string,
-    data: any[],
+    queryResult: { recordsets: any[][] },
     params: Record<string, any>
   ): Promise<Blob> => {
     const res = await api.post<any>(
       `/user/reports/${id}/export`,
-      { data, params },
+      { recordsets: queryResult.recordsets, params },
       { responseType: 'blob' }
     );
     return res.data;
@@ -115,6 +115,11 @@ export const systemApi = {
 
   getSPMetadata: async (spName: string): Promise<ApiResponse<SPMetadata>> => {
     const res = await api.get<ApiResponse<SPMetadata>>(`/system/sp-metadata/${encodeURIComponent(spName)}`);
+    return res.data;
+  },
+
+  testRun: async (spName: string, params: Record<string, any>): Promise<ApiResponse<{ columns: string[]; rows: any[]; params: any[]; recordsets: any[][] }>> => {
+    const res = await api.post<ApiResponse<{ columns: string[]; rows: any[]; params: any[]; recordsets: any[][] }>>('/system/sp-metadata/test-run', { spName, params });
     return res.data;
   },
 

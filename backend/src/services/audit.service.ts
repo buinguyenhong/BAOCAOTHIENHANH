@@ -1,44 +1,44 @@
-import { configDb } from '../config/database.js';
+import { configDb, configExec } from '../config/database.js';
 import { AuditLog, AuditAction } from '../models/types.js';
 import { v4 as uuidv4 } from 'uuid';
 
 export class AuditService {
-  async log(
+  log(
     action: AuditAction,
     userId: string | null,
     target: string | null,
     ipAddress: string | null,
     details: string | null = null
-  ): Promise<void> {
+  ): void {
     try {
-      await configDb(
+      configExec(
         `INSERT INTO AuditLogs (id, userId, action, target, ipAddress, details)
-         VALUES (@id, @userId, @action, @target, @ipAddress, @details)`,
+         VALUES ($id, $userId, $action, $target, $ipAddress, $details)`,
         {
           id: uuidv4(),
-          userId: userId || null,
+          userId,
           action,
-          target: target || null,
-          ipAddress: ipAddress || null,
-          details: details || null,
+          target,
+          ipAddress,
+          details,
         }
       );
     } catch (err) {
-      // Log lỗi audit không nên crash app
       console.error('Audit log error:', err);
     }
   }
 
-  async getLogs(limit = 100): Promise<AuditLog[]> {
+  getLogs(limit = 100): AuditLog[] {
     return configDb<AuditLog>(
-      `SELECT TOP ${limit} * FROM AuditLogs ORDER BY timestamp DESC`
+      `SELECT * FROM AuditLogs ORDER BY timestamp DESC LIMIT $limit`,
+      { limit }
     );
   }
 
-  async getLogsByUser(userId: string, limit = 50): Promise<AuditLog[]> {
+  getLogsByUser(userId: string, limit = 50): AuditLog[] {
     return configDb<AuditLog>(
-      `SELECT TOP ${limit} * FROM AuditLogs WHERE userId = @userId ORDER BY timestamp DESC`,
-      { userId }
+      `SELECT * FROM AuditLogs WHERE userId = $userId ORDER BY timestamp DESC LIMIT $limit`,
+      { userId, limit }
     );
   }
 }

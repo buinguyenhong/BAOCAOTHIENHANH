@@ -13,7 +13,7 @@ router.post('/login', async (req: Request, res: Response) => {
     const { username, password } = req.body;
 
     if (!username || !password) {
-      await auditService.log('LOGIN_FAILED', null, username, req.ip, 'Thiếu username hoặc password');
+      await auditService.log('LOGIN_FAILED', null, username, req.ip ?? null, 'Thiếu username hoặc password');
       return res.status(400).json({
         success: false,
         error: 'Vui lòng nhập username và password',
@@ -23,7 +23,7 @@ router.post('/login', async (req: Request, res: Response) => {
     const user = await authService.login({ username, password });
 
     if (!user) {
-      await auditService.log('LOGIN_FAILED', null, username, req.ip, 'Sai username hoặc password');
+      await auditService.log('LOGIN_FAILED', null, username, req.ip ?? null, 'Sai username hoặc password');
       return res.status(401).json({
         success: false,
         error: 'Username hoặc password không đúng',
@@ -36,7 +36,7 @@ router.post('/login', async (req: Request, res: Response) => {
       role: user.role,
     });
 
-    await auditService.log('LOGIN', user.id, user.username, req.ip, 'Đăng nhập thành công');
+    await auditService.log('LOGIN', user.id, user.username, req.ip ?? null, 'Đăng nhập thành công');
 
     res.json({
       success: true,
@@ -59,7 +59,7 @@ router.post('/login', async (req: Request, res: Response) => {
 // POST /api/auth/logout
 router.post('/logout', authMiddleware, async (req: AuthRequest, res: Response) => {
   if (req.user) {
-    await auditService.log('LOGOUT', req.user.userId, req.user.username, req.ip, 'Đăng xuất');
+    await auditService.log('LOGOUT', req.user.userId, req.user.username, req.ip ?? null, 'Đăng xuất');
   }
   res.json({ success: true, message: 'Đăng xuất thành công' });
 });
@@ -108,7 +108,7 @@ router.post('/change-password', authMiddleware, async (req: AuthRequest, res: Re
       'UPDATE_USER',
       req.user!.userId,
       `User ${req.user!.username}`,
-      req.ip,
+      req.ip ?? null,
       'Đổi mật khẩu'
     );
 

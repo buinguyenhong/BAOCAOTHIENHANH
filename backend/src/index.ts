@@ -8,9 +8,14 @@ import authRoutes from './routes/auth.routes.js';
 import reportRoutes from './routes/report.routes.js';
 import userRoutes from './routes/user.routes.js';
 import systemRoutes from './routes/system.routes.js';
+import { getDb } from './config/database.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
+
+// Initialize SQLite database (tạo bảng + seed users)
+getDb();
+console.log('✅ ConfigDB (SQLite) initialized');
 const PORT = process.env.PORT || 5000;
 const HOST = process.env.HOST || '0.0.0.0'; // Lắng nghe trên tất cả interface (để LAN truy cập)
 

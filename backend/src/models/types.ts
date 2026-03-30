@@ -102,6 +102,7 @@ export interface ReportMapping {
   cellAddress: string | null;
   mappingType: MappingType;
   displayOrder: number;
+  sheetName?: string | null;
 }
 
 export interface CreateReportMappingDto {
@@ -109,6 +110,7 @@ export interface CreateReportMappingDto {
   cellAddress?: string;
   mappingType?: MappingType;
   displayOrder?: number;
+  sheetName?: string;
 }
 
 // =====================
@@ -187,6 +189,7 @@ export interface SPParameterMetadata {
 export interface QueryResult {
   columns: string[];
   rows: Record<string, any>[];
+  recordsets?: Record<string, any>[][];
 }
 
 // =====================

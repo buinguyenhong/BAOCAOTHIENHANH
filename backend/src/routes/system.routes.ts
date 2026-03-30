@@ -31,7 +31,7 @@ router.get(
   authMiddleware,
   async (req: Request, res: Response) => {
     try {
-      const { spName } = req.params;
+      const { spName } = (req.params as any);
       const [columns, parameters] = await Promise.all([
         hospitalService.getSPColumnMetadata(spName),
         hospitalService.getSPParameterMetadata(spName),
@@ -63,6 +63,25 @@ router.get(
           hospitalConfigured: !!hospitalConfig,
         },
       });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  }
+);
+
+// POST /api/system/sp-metadata/test-run - Chạy thử SP với params, trả columns + sample rows + params
+router.post(
+  '/sp-metadata/test-run',
+  authMiddleware,
+  async (req: Request, res: Response) => {
+    try {
+      const { spName, params } = req.body as { spName: string; params?: Record<string, any> };
+      if (!spName) {
+        return res.status(400).json({ success: false, error: 'Thiếu spName' });
+      }
+
+      const result = await hospitalService.testRun(spName, params || {});
+      res.json({ success: true, data: result });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
     }
@@ -116,7 +135,7 @@ router.post(
         'UPDATE_CONFIG',
         req.user!.userId,
         `HospitalDB: ${server}/${database}`,
-        req.ip,
+        req.ip ?? null,
         'Cấu hình kết nối HospitalDB'
       );
 

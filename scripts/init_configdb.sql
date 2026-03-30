@@ -87,8 +87,16 @@ BEGIN
         cellAddress   VARCHAR(20),
         mappingType   VARCHAR(20) DEFAULT 'list',
         displayOrder  INT DEFAULT 0,
+        sheetName     VARCHAR(100),
         FOREIGN KEY (reportId) REFERENCES Reports(id) ON DELETE CASCADE
     );
+END
+GO
+
+-- Thêm cột sheetName nếu bảng đã tồn tại (migration)
+IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('ReportMappings') AND name = 'sheetName')
+BEGIN
+    ALTER TABLE ReportMappings ADD sheetName VARCHAR(100);
 END
 GO
 
@@ -130,7 +138,7 @@ GO
 
 -- =====================================================
 -- 7. Seed: Admin User
--- Password: Admin@123 (bcrypt hash)
+-- Password: Admin@123 (bcrypt hash of "Admin@123")
 -- =====================================================
 IF NOT EXISTS (SELECT * FROM Users WHERE username = 'admin')
 BEGIN
@@ -138,7 +146,7 @@ BEGIN
     VALUES (
         LOWER(CONVERT(VARCHAR(36), NEWID())),
         'admin',
-        '$2a$10$N9qo8uLOickgx2ZMRZoMy.MqrqzU2mIqLB3VzdhHqHQUH5mC0J5Pi',
+        '$2a$10$QszXNrAaXKkmOaImloF3TO.wnvJiIrIT/RKkGFfG1A3TbBH7SbXj.',
         N'Quản trị viên',
         'admin',
         1
@@ -148,7 +156,7 @@ GO
 
 -- =====================================================
 -- 8. Seed: Test User
--- Password: User@123
+-- Password: User@123 (bcrypt hash of "User@123")
 -- =====================================================
 IF NOT EXISTS (SELECT * FROM Users WHERE username = 'user')
 BEGIN
@@ -156,7 +164,7 @@ BEGIN
     VALUES (
         LOWER(CONVERT(VARCHAR(36), NEWID())),
         'user',
-        '$2a$10$N9qo8uLOickgx2ZMRZoMy.MqrqzU2mIqLB3VzdhHqHQUH5mC0J5Pi',
+        '$2a$10$d6nBHBF/usRBtFL2LwtaQOGob/euTki/WTP/6G/OBXGm8kfOI12by',
         N'Người dùng thường',
         'user',
         1
