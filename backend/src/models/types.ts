@@ -23,6 +23,87 @@ export interface UpdateUserDto {
   fullName?: string;
   role?: 'admin' | 'user';
   isActive?: boolean;
+  password?: string;
+}
+
+// =====================
+// User Permissions (admin action permissions)
+// =====================
+export interface UserPermission {
+  id: string;
+  userId: string;
+  canCreateReport: boolean;
+  canEditReport: boolean;
+  canDeleteReport: boolean;
+  canCreateGroup: boolean;
+  canEditGroup: boolean;
+  canDeleteGroup: boolean;
+}
+
+export interface SetUserPermissionsDto {
+  canCreateReport?: boolean;
+  canEditReport?: boolean;
+  canDeleteReport?: boolean;
+  canCreateGroup?: boolean;
+  canEditGroup?: boolean;
+  canDeleteGroup?: boolean;
+}
+
+// =====================
+// Report Group types
+// =====================
+export interface ReportGroup {
+  id: string;
+  name: string;
+  icon: string;
+  displayOrder: number;
+  createdAt: Date;
+}
+
+export interface CreateReportGroupDto {
+  name: string;
+  icon?: string;
+  displayOrder?: number;
+}
+
+export interface UpdateReportGroupDto {
+  name?: string;
+  icon?: string;
+  displayOrder?: number;
+}
+
+// =====================
+// User ↔ ReportGroup permissions (which groups a user can VIEW)
+// =====================
+export interface UserReportGroupPermission {
+  id: string;
+  userId: string;
+  reportGroupId: string;
+}
+
+export interface SetUserReportGroupsDto {
+  reportGroupIds: string[];
+}
+
+// =====================
+// Full user payload (for user management UI)
+// =====================
+export interface UserWithPermissions {
+  user: Omit<User, 'password'>;
+  permissions: UserPermission | null;
+  reportGroupIds: string[];
+}
+
+// =====================
+// User action permission check result
+// =====================
+export interface UserActionPermissions {
+  canCreateReport: boolean;
+  canEditReport: boolean;
+  canDeleteReport: boolean;
+  canCreateGroup: boolean;
+  canEditGroup: boolean;
+  canDeleteGroup: boolean;
 }
 
 // =====================

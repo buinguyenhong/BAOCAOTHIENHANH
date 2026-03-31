@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { reportService } from '../services/report.service.js';
+import { authService } from '../services/auth.service.js';
 import { excelService } from '../services/excel.service.js';
 import { auditService } from '../services/audit.service.js';
 import { authMiddleware, adminMiddleware } from '../middleware/auth.middleware.js';
@@ -12,6 +13,17 @@ import {
 } from '../utils/normalize.js';
 
 const router = Router();
+
+// Helper: kiểm tra action permission cho current user
+async function checkActionPermission(
+  req: AuthRequest,
+  action: 'canCreateReport' | 'canEditReport' | 'canDeleteReport' | 'canCreateGroup' | 'canEditGroup' | 'canDeleteGroup'
+): Promise<boolean> {
+  const userId = req.user!.userId;
+  const role = req.user!.role;
+  const perms = await authService.getUserActionPermissions(userId, role);
+  return perms[action];
+}
 
 // =====================
 // USER ROUTES (/api/user/reports)
@@ -211,14 +223,19 @@ router.post(
   adminMiddleware,
   async (req: AuthRequest, res: Response) => {
     try {
-      const { name, groupName, groupIcon, spName, description, parameters, mappings, templateFile, templateData } = req.body;
+      const hasPerm = await checkActionPermission(req, 'canCreateReport');
+      if (!hasPerm) {
+        return res.status(403).json({ success: false, error: 'Bạn không có quyền thêm báo cáo' });
+      }
+
+      const { name, groupName, groupIcon, spName, description, parameters, mappings, templateFile, templateData, reportGroupId } = req.body;
 
       if (!name || !spName) {
         return res.status(400).json({ success: false, error: 'Tên báo cáo và Stored Procedure là bắt buộc' });
       }
 
       const report = await reportService.createReport(
-        { name, groupName, groupIcon, spName, description },
+        { name, groupName, groupIcon, spName, description, reportGroupId } as any,
         req.user!.userId
       );
 
@@ -278,7 +295,12 @@ router.put(
   adminMiddleware,
   async (req: AuthRequest, res: Response) => {
     try {
-      const { name, groupName, groupIcon, description, templateFile, parameters, mappings } = req.body;
+      const hasPerm = await checkActionPermission(req, 'canEditReport');
+      if (!hasPerm) {
+        return res.status(403).json({ success: false, error: 'Bạn không có quyền sửa báo cáo' });
+      }
+
+      const { name, groupName, groupIcon, description, templateFile, parameters, mappings, reportGroupId } = req.body;
 
       const updated = await reportService.updateReport(((req.params as any).id as string), {
         name,
@@ -286,7 +308,8 @@ router.put(
         groupIcon,
         description,
         templateFile,
-      });
+        reportGroupId,
+      } as any);
 
       if (parameters !== undefined) {
         await reportService.setReportParameters(((req.params as any).id as string), parameters);
@@ -318,6 +341,11 @@ router.delete(
   adminMiddleware,
   async (req: AuthRequest, res: Response) => {
     try {
+      const hasPerm = await checkActionPermission(req, 'canDeleteReport');
+      if (!hasPerm) {
+        return res.status(403).json({ success: false, error: 'Bạn không có quyền xóa báo cáo' });
+      }
+
       const report = await reportService.getReportById(((req.params as any).id as string));
       await reportService.deleteReport(((req.params as any).id as string));
 

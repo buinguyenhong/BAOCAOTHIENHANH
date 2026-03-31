@@ -7,14 +7,27 @@ import { AuthRequest } from '../middleware/auth.middleware.js';
 
 const router = Router();
 
-// GET /api/users - Danh sách users (admin)
+// Helper: check action permission for current user
+async function checkActionPermission(
+  req: AuthRequest,
+  action: 'canCreateReport' | 'canEditReport' | 'canDeleteReport' | 'canCreateGroup' | 'canEditGroup' | 'canDeleteGroup'
+): Promise<boolean> {
+  const userId = req.user!.userId;
+  const role = req.user!.role;
+  const perms = await authService.getUserActionPermissions(userId, role);
+  return perms[action];
+}
+
+// ─── User CRUD ─────────────────────────────────────────────────
+
+// GET /api/users — Danh sách users (admin)
 router.get(
   '/users',
   authMiddleware,
   adminMiddleware,
   async (req: AuthRequest, res: Response) => {
     try {
-      const users = await authService.getAllUsers();
+      const users = await authService.getAllUsersWithPermissions();
       res.json({ success: true, data: users });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
@@ -22,49 +35,53 @@ router.get(
   }
 );
 
-// POST /api/users - Tạo user mới (admin)
+// POST /api/users — Tạo user mới (admin + quyền canCreateReport)
 router.post(
   '/users',
   authMiddleware,
   adminMiddleware,
   async (req: AuthRequest, res: Response) => {
     try {
-      const { username, password, fullName, role } = req.body;
+      const { username, password, fullName, role, permissions, reportGroupIds } = req.body;
 
       if (!username || !password) {
         return res.status(400).json({ success: false, error: 'Username và password là bắt buộc' });
       }
-
       if (password.length < 6) {
         return res.status(400).json({ success: false, error: 'Password phải có ít nhất 6 ký tự' });
       }
 
-      // Check existing
       const existing = await authService.findByUsername(username);
       if (existing) {
         return res.status(400).json({ success: false, error: 'Username đã tồn tại' });
       }
 
-      const user = await authService.createUser({ username, password, fullName, role });
+      // permissions: action permissions (canCreateReport, canEditReport, ...)
+      const permissionsDto = permissions ?? {
+        canCreateReport: false,
+        canEditReport: false,
+        canDeleteReport: false,
+        canCreateGroup: false,
+        canEditGroup: false,
+        canDeleteGroup: false,
+      };
+      const groupIds = Array.isArray(reportGroupIds) ? reportGroupIds : [];
+
+      const result = await authService.createUserFull(
+        { username, password, fullName, role },
+        permissionsDto,
+        groupIds
+      );
 
       await auditService.log(
         'CREATE_USER',
         req.user!.userId,
         username,
         req.ip ?? null,
-        `Tạo user ${username} với role ${role || 'user'}`
+        `Tạo user ${username}, role=${role || 'user'}, nhóm=${groupIds.length}`
       );
 
-      res.json({
-        success: true,
-        data: {
-          id: user.id,
-          username: user.username,
-          fullName: user.fullName,
-          role: user.role,
-          isActive: user.isActive,
-        },
-      });
+      res.json({ success: true, data: result });
     } catch (err: any) {
       console.error('Create user error:', err);
       res.status(500).json({ success: false, error: err.message });
@@ -72,50 +89,73 @@ router.post(
   }
 );
 
-// PUT /api/users/:id - Cập nhật user (admin)
-router.put(
+// GET /api/users/:id — Chi tiết user (admin)
+router.get(
   '/users/:id',
   authMiddleware,
   adminMiddleware,
   async (req: AuthRequest, res: Response) => {
     try {
-      const { fullName, role, isActive } = req.body;
-
-      // Không cho phép tự sửa role của chính mình thành non-admin
-      if ((req.params.id as string) === req.user!.userId && role && role !== 'admin') {
-        return res.status(400).json({ success: false, error: 'Không thể hạ role của chính mình' });
-      }
-
-      const updated = await authService.updateUser((req.params.id as string), { fullName, role, isActive });
-      if (!updated) {
+      const result = await authService.getUserWithPermissions((req.params as any).id as string);
+      if (!result) {
         return res.status(404).json({ success: false, error: 'Không tìm thấy user' });
       }
-
-      await auditService.log(
-        'UPDATE_USER',
-        req.user!.userId,
-        updated.username,
-        req.ip ?? null,
-        `Cập nhật: fullName=${fullName}, role=${role}, isActive=${isActive}`
-      );
-
-      res.json({
-        success: true,
-        data: {
-          id: updated.id,
-          username: updated.username,
-          fullName: updated.fullName,
-          role: updated.role,
-          isActive: updated.isActive,
-        },
-      });
+      res.json({ success: true, data: result });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
     }
   }
 );
 
-// POST /api/users/:id/reset-password - Reset password (admin)
+// PUT /api/users/:id — Cập nhật user (admin)
+router.put(
+  '/users/:id',
+  authMiddleware,
+  adminMiddleware,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const userId = (req.params as any).id as string;
+
+      // Không cho tự sửa role của chính mình
+      if (userId === req.user!.userId && req.body.role && req.body.role !== 'admin') {
+        return res.status(400).json({ success: false, error: 'Không thể hạ role của chính mình' });
+      }
+
+      const { fullName, role, isActive, password, permissions, reportGroupIds } = req.body;
+
+      // permissions: null = giữ nguyên, object = update
+      const permissionsDto: any = permissions !== undefined ? permissions : null;
+      const groupIds = permissions !== undefined
+        ? (Array.isArray(reportGroupIds) ? reportGroupIds : [])
+        : undefined; // undefined = giữ nguyên
+
+      const result = await authService.updateUserFull(
+        userId,
+        { fullName, role, isActive, password },
+        permissionsDto,
+        groupIds ?? []
+      );
+
+      if (!result) {
+        return res.status(404).json({ success: false, error: 'Không tìm thấy user' });
+      }
+
+      await auditService.log(
+        'UPDATE_USER',
+        req.user!.userId,
+        result.user.username,
+        req.ip ?? null,
+        `Cập nhật: fullName=${fullName}, role=${role}, isActive=${isActive}`
+      );
+
+      res.json({ success: true, data: result });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  }
+);
+
+// POST /api/users/:id/reset-password — Reset password (admin)
 router.post(
   '/users/:id/reset-password',
   authMiddleware,
@@ -128,12 +168,12 @@ router.post(
         return res.status(400).json({ success: false, error: 'Password phải có ít nhất 6 ký tự' });
       }
 
-      const user = await authService.findById((req.params.id as string));
+      const user = await authService.findById((req.params as any).id as string);
       if (!user) {
         return res.status(404).json({ success: false, error: 'Không tìm thấy user' });
       }
 
-      await authService.resetPassword((req.params.id as string), newPassword);
+      await authService.resetPassword((req.params as any).id as string, newPassword);
 
       await auditService.log(
         'UPDATE_USER',
@@ -150,23 +190,25 @@ router.post(
   }
 );
 
-// DELETE /api/users/:id - Xóa user (admin)
+// DELETE /api/users/:id — Xóa user (admin)
 router.delete(
   '/users/:id',
   authMiddleware,
   adminMiddleware,
   async (req: AuthRequest, res: Response) => {
     try {
-      if ((req.params.id as string) === req.user!.userId) {
+      const userId = (req.params as any).id as string;
+
+      if (userId === req.user!.userId) {
         return res.status(400).json({ success: false, error: 'Không thể xóa chính mình' });
       }
 
-      const user = await authService.findById((req.params.id as string));
+      const user = await authService.findById(userId);
       if (!user) {
         return res.status(404).json({ success: false, error: 'Không tìm thấy user' });
       }
 
-      await authService.deleteUser((req.params.id as string));
+      await authService.deleteUser(userId);
 
       await auditService.log(
         'DELETE_USER',
@@ -183,14 +225,135 @@ router.delete(
   }
 );
 
-// GET /api/users/:id/permissions - Lấy permissions của user
+// ─── Report Group CRUD ─────────────────────────────────────────
+
+// GET /api/report-groups — Danh sách nhóm báo cáo (admin)
+router.get(
+  '/report-groups',
+  authMiddleware,
+  adminMiddleware,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const groups = await authService.getAllReportGroups();
+      res.json({ success: true, data: groups });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  }
+);
+
+// POST /api/report-groups — Tạo nhóm báo cáo (admin + canCreateGroup)
+router.post(
+  '/report-groups',
+  authMiddleware,
+  adminMiddleware,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const hasPerm = await checkActionPermission(req, 'canCreateGroup');
+      if (!hasPerm) {
+        return res.status(403).json({ success: false, error: 'Bạn không có quyền thêm nhóm báo cáo' });
+      }
+
+      const { name, icon, displayOrder } = req.body;
+      if (!name) {
+        return res.status(400).json({ success: false, error: 'Tên nhóm báo cáo là bắt buộc' });
+      }
+
+      const group = await authService.createReportGroup({ name, icon, displayOrder });
+
+      await auditService.log(
+        'CREATE_REPORT',
+        req.user!.userId,
+        `Nhóm: ${name}`,
+        req.ip ?? null,
+        'Tạo nhóm báo cáo'
+      );
+
+      res.json({ success: true, data: group });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  }
+);
+
+// PUT /api/report-groups/:id — Cập nhật nhóm báo cáo (admin + canEditGroup)
+router.put(
+  '/report-groups/:id',
+  authMiddleware,
+  adminMiddleware,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const hasPerm = await checkActionPermission(req, 'canEditGroup');
+      if (!hasPerm) {
+        return res.status(403).json({ success: false, error: 'Bạn không có quyền sửa nhóm báo cáo' });
+      }
+
+      const { name, icon, displayOrder } = req.body;
+      const group = await authService.updateReportGroup((req.params as any).id as string, { name, icon, displayOrder });
+
+      if (!group) {
+        return res.status(404).json({ success: false, error: 'Không tìm thấy nhóm báo cáo' });
+      }
+
+      await auditService.log(
+        'UPDATE_REPORT',
+        req.user!.userId,
+        `Nhóm: ${group.name}`,
+        req.ip ?? null,
+        'Sửa nhóm báo cáo'
+      );
+
+      res.json({ success: true, data: group });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  }
+);
+
+// DELETE /api/report-groups/:id — Xóa nhóm báo cáo (admin + canDeleteGroup)
+router.delete(
+  '/report-groups/:id',
+  authMiddleware,
+  adminMiddleware,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const hasPerm = await checkActionPermission(req, 'canDeleteGroup');
+      if (!hasPerm) {
+        return res.status(403).json({ success: false, error: 'Bạn không có quyền xóa nhóm báo cáo' });
+      }
+
+      const group = await authService.getReportGroupById((req.params as any).id as string);
+      if (!group) {
+        return res.status(404).json({ success: false, error: 'Không tìm thấy nhóm báo cáo' });
+      }
+
+      await authService.deleteReportGroup((req.params as any).id as string);
+
+      await auditService.log(
+        'DELETE_REPORT',
+        req.user!.userId,
+        `Nhóm: ${group.name}`,
+        req.ip ?? null,
+        null
+      );
+
+      res.json({ success: true, message: 'Xóa nhóm báo cáo thành công' });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  }
+);
+
+// ─── Legacy permission APIs (kept for backward compat) ─────────
+
+// GET /api/users/:id/permissions — Permissions cũ (per-report)
 router.get(
   '/users/:id/permissions',
   authMiddleware,
   adminMiddleware,
   async (req: AuthRequest, res: Response) => {
     try {
-      const perms = await reportService.getUserPermissions((req.params.id as string));
+      const perms = await reportService.getUserPermissions((req.params as any).id as string);
       res.json({ success: true, data: perms });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
@@ -198,7 +361,7 @@ router.get(
   }
 );
 
-// PUT /api/users/:id/permissions - Gán quyền báo cáo cho user
+// PUT /api/users/:id/permissions — Permissions cũ (per-report)
 router.put(
   '/users/:id/permissions',
   authMiddleware,
@@ -214,13 +377,13 @@ router.put(
       }
 
       for (const perm of permissions) {
-        await reportService.setUserReportPermission((req.params.id as string), perm.reportId, {
+        await reportService.setUserReportPermission((req.params as any).id as string, perm.reportId, {
           canView: perm.canView,
           canExport: perm.canExport,
         });
       }
 
-      const user = await authService.findById((req.params.id as string));
+      const user = await authService.findById((req.params as any).id as string);
       await auditService.log(
         'SET_PERMISSION',
         req.user!.userId,
@@ -229,7 +392,7 @@ router.put(
         `Cập nhật ${permissions.length} quyền báo cáo`
       );
 
-      const updated = await reportService.getUserPermissions((req.params.id as string));
+      const updated = await reportService.getUserPermissions((req.params as any).id as string);
       res.json({ success: true, data: updated });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
@@ -237,7 +400,7 @@ router.put(
   }
 );
 
-// POST /api/users/bulk-permissions - Bulk assign permissions
+// POST /api/users/bulk-permissions — Bulk assign per-report permissions
 router.post(
   '/users/bulk-permissions',
   authMiddleware,

@@ -12,6 +12,14 @@ import {
   SetPermissionDto,
   QueryResult,
   User,
+  UserPermission,
+  SetUserPermissionsDto,
+  ReportGroup,
+  CreateReportGroupDto,
+  UpdateReportGroupDto,
+  SetUserReportGroupsDto,
+  UserWithPermissions,
+  UserActionPermissions,
 } from '../models/types.js';
 import { hashPassword, comparePassword } from '../utils/password.js';
 import { v4 as uuidv4 } from 'uuid';
@@ -49,7 +57,12 @@ export class AuthService {
     return user;
   }
 
-  async createUser(dto: { username: string; password: string; fullName?: string; role?: string }): Promise<User> {
+  async createUser(dto: {
+    username: string;
+    password: string;
+    fullName?: string;
+    role?: string;
+  }): Promise<User> {
     const id = uuidv4();
     const hashed = await hashPassword(dto.password);
 
@@ -65,16 +78,31 @@ export class AuthService {
       }
     );
 
+    // Tạo UserPermissions mặc định (user thường: toàn quyền false)
+    configExec(
+      `INSERT INTO UserPermissions (id, userId, canCreateReport, canEditReport, canDeleteReport, canCreateGroup, canEditGroup, canDeleteGroup)
+       VALUES ($id, $userId, 0, 0, 0, 0, 0, 0)`,
+      { id: uuidv4(), userId: id }
+    );
+
     return this.findById(id) as Promise<User>;
   }
 
-  async updateUser(id: string, dto: { fullName?: string; role?: string; isActive?: boolean }): Promise<User | null> {
+  async updateUser(
+    id: string,
+    dto: { fullName?: string; role?: string; isActive?: boolean; password?: string }
+  ): Promise<User | null> {
     const updates: string[] = [];
     const params: Record<string, any> = { id };
 
     if (dto.fullName !== undefined) { updates.push('fullName = $fullName'); params.fullName = dto.fullName; }
     if (dto.role !== undefined) { updates.push('role = $role'); params.role = dto.role; }
     if (dto.isActive !== undefined) { updates.push('isActive = $isActive'); params.isActive = dto.isActive ? 1 : 0; }
+    if (dto.password !== undefined && dto.password) {
+      const hashed = await hashPassword(dto.password);
+      updates.push('password = $password');
+      params.password = hashed;
+    }
 
     if (updates.length === 0) return this.findById(id);
 
@@ -123,6 +151,237 @@ export class AuthService {
     configExec('DELETE FROM Users WHERE id = $id', { id });
     return true;
   }
+
+  // ─── UserPermissions ─────────────────────────────────────────
+
+  async getUserPermissions(userId: string): Promise<UserPermission | null> {
+    const rows = configDb<UserPermission & { id: string }>(
+      'SELECT * FROM UserPermissions WHERE userId = $userId',
+      { userId }
+    );
+    if (rows.length === 0) return null;
+    const r = rows[0];
+    return {
+      id: r.id,
+      userId: r.userId,
+      canCreateReport: !!r.canCreateReport,
+      canEditReport: !!r.canEditReport,
+      canDeleteReport: !!r.canDeleteReport,
+      canCreateGroup: !!r.canCreateGroup,
+      canEditGroup: !!r.canEditGroup,
+      canDeleteGroup: !!r.canDeleteGroup,
+    };
+  }
+
+  async setUserPermissions(userId: string, dto: SetUserPermissionsDto): Promise<UserPermission> {
+    // Upsert
+    const existing = configDb<{ id: string }>(
+      'SELECT id FROM UserPermissions WHERE userId = $userId',
+      { userId }
+    );
+    if (existing.length > 0) {
+      const updates: string[] = [];
+      const params: Record<string, any> = { id: existing[0].id };
+      if (dto.canCreateReport !== undefined) { updates.push('canCreateReport = $canCreateReport'); params.canCreateReport = dto.canCreateReport ? 1 : 0; }
+      if (dto.canEditReport !== undefined) { updates.push('canEditReport = $canEditReport'); params.canEditReport = dto.canEditReport ? 1 : 0; }
+      if (dto.canDeleteReport !== undefined) { updates.push('canDeleteReport = $canDeleteReport'); params.canDeleteReport = dto.canDeleteReport ? 1 : 0; }
+      if (dto.canCreateGroup !== undefined) { updates.push('canCreateGroup = $canCreateGroup'); params.canCreateGroup = dto.canCreateGroup ? 1 : 0; }
+      if (dto.canEditGroup !== undefined) { updates.push('canEditGroup = $canEditGroup'); params.canEditGroup = dto.canEditGroup ? 1 : 0; }
+      if (dto.canDeleteGroup !== undefined) { updates.push('canDeleteGroup = $canDeleteGroup'); params.canDeleteGroup = dto.canDeleteGroup ? 1 : 0; }
+      if (updates.length > 0) {
+        configExec(`UPDATE UserPermissions SET ${updates.join(', ')} WHERE id = $id`, params);
+      }
+    } else {
+      configExec(
+        `INSERT INTO UserPermissions (id, userId, canCreateReport, canEditReport, canDeleteReport, canCreateGroup, canEditGroup, canDeleteGroup)
+         VALUES ($id, $userId, $canCreateReport, $canEditReport, $canDeleteReport, $canCreateGroup, $canEditGroup, $canDeleteGroup)`,
+        {
+          id: uuidv4(),
+          userId,
+          canCreateReport: dto.canCreateReport ? 1 : 0,
+          canEditReport: dto.canEditReport ? 1 : 0,
+          canDeleteReport: dto.canDeleteReport ? 1 : 0,
+          canCreateGroup: dto.canCreateGroup ? 1 : 0,
+          canEditGroup: dto.canEditGroup ? 1 : 0,
+          canDeleteGroup: dto.canDeleteGroup ? 1 : 0,
+        }
+      );
+    }
+    return this.getUserPermissions(userId) as Promise<UserPermission>;
+  }
+
+  /**
+   * Lấy quyền hành động của user.
+   * Admin luôn có full quyền.
+   */
+  async getUserActionPermissions(userId: string, role: string): Promise<UserActionPermissions> {
+    if (role === 'admin') {
+      return {
+        canCreateReport: true,
+        canEditReport: true,
+        canDeleteReport: true,
+        canCreateGroup: true,
+        canEditGroup: true,
+        canDeleteGroup: true,
+      };
+    }
+    const perms = await this.getUserPermissions(userId);
+    if (!perms) {
+      return {
+        canCreateReport: false,
+        canEditReport: false,
+        canDeleteReport: false,
+        canCreateGroup: false,
+        canEditGroup: false,
+        canDeleteGroup: false,
+      };
+    }
+    return {
+      canCreateReport: perms.canCreateReport,
+      canEditReport: perms.canEditReport,
+      canDeleteReport: perms.canDeleteReport,
+      canCreateGroup: perms.canCreateGroup,
+      canEditGroup: perms.canEditGroup,
+      canDeleteGroup: perms.canDeleteGroup,
+    };
+  }
+
+  // ─── ReportGroup ─────────────────────────────────────────────
+
+  async getAllReportGroups(): Promise<ReportGroup[]> {
+    return configDb<ReportGroup>(
+      'SELECT id, name, icon, displayOrder, createdAt FROM ReportGroups ORDER BY displayOrder, name'
+    );
+  }
+
+  async getReportGroupById(id: string): Promise<ReportGroup | null> {
+    const rows = configDb<ReportGroup>(
+      'SELECT id, name, icon, displayOrder, createdAt FROM ReportGroups WHERE id = $id',
+      { id }
+    );
+    return rows[0] || null;
+  }
+
+  async createReportGroup(dto: CreateReportGroupDto): Promise<ReportGroup> {
+    const id = uuidv4();
+    configExec(
+      `INSERT INTO ReportGroups (id, name, icon, displayOrder)
+       VALUES ($id, $name, $icon, $displayOrder)`,
+      {
+        id,
+        name: dto.name,
+        icon: dto.icon || '📂',
+        displayOrder: dto.displayOrder ?? 0,
+      }
+    );
+    return this.getReportGroupById(id) as Promise<ReportGroup>;
+  }
+
+  async updateReportGroup(id: string, dto: UpdateReportGroupDto): Promise<ReportGroup | null> {
+    const updates: string[] = [];
+    const params: Record<string, any> = { id };
+    if (dto.name !== undefined) { updates.push('name = $name'); params.name = dto.name; }
+    if (dto.icon !== undefined) { updates.push('icon = $icon'); params.icon = dto.icon; }
+    if (dto.displayOrder !== undefined) { updates.push('displayOrder = $displayOrder'); params.displayOrder = dto.displayOrder; }
+    if (updates.length === 0) return this.getReportGroupById(id);
+    configExec(`UPDATE ReportGroups SET ${updates.join(', ')} WHERE id = $id`, params);
+    return this.getReportGroupById(id);
+  }
+
+  async deleteReportGroup(id: string): Promise<boolean> {
+    // Cập nhật Reports thuộc nhóm này về null
+    configExec('UPDATE Reports SET reportGroupId = NULL WHERE reportGroupId = $id', { id });
+    configExec('DELETE FROM UserReportGroupPermissions WHERE reportGroupId = $id', { id });
+    configExec('DELETE FROM ReportGroups WHERE id = $id', { id });
+    return true;
+  }
+
+  // ─── UserReportGroupPermission ───────────────────────────────
+
+  /**
+   * Lấy danh sách reportGroupId mà user được phép xem.
+   */
+  async getUserReportGroupIds(userId: string): Promise<string[]> {
+    const rows = configDb<{ reportGroupId: string }>(
+      'SELECT reportGroupId FROM UserReportGroupPermissions WHERE userId = $userId',
+      { userId }
+    );
+    return rows.map(r => r.reportGroupId);
+  }
+
+  /**
+   * Gán/replace danh sách nhóm báo cáo cho user.
+   */
+  async setUserReportGroups(userId: string, dto: SetUserReportGroupsDto): Promise<string[]> {
+    configExec('DELETE FROM UserReportGroupPermissions WHERE userId = $userId', { userId });
+    for (const groupId of dto.reportGroupIds) {
+      configExec(
+        `INSERT INTO UserReportGroupPermissions (id, userId, reportGroupId)
+         VALUES ($id, $userId, $reportGroupId)`,
+        { id: uuidv4(), userId, reportGroupId: groupId }
+      );
+    }
+    return this.getUserReportGroupIds(userId);
+  }
+
+  // ─── Full user with all permissions ────────────────────────
+
+  async getUserWithPermissions(userId: string): Promise<UserWithPermissions | null> {
+    const user = await this.findById(userId);
+    if (!user) return null;
+    const permissions = await this.getUserPermissions(userId);
+    const reportGroupIds = await this.getUserReportGroupIds(userId);
+    const { password: _, ...safeUser } = user;
+    return { user: safeUser, permissions, reportGroupIds };
+  }
+
+  async getAllUsersWithPermissions(): Promise<UserWithPermissions[]> {
+    const users = await this.getAllUsers();
+    const results: UserWithPermissions[] = [];
+    for (const user of users) {
+      const permissions = await this.getUserPermissions(user.id);
+      const reportGroupIds = await this.getUserReportGroupIds(user.id);
+      results.push({ user, permissions, reportGroupIds });
+    }
+    return results;
+  }
+
+  /**
+   * Tạo user đầy đủ (user + permissions + report groups).
+   */
+  async createUserFull(
+    dto: {
+      username: string;
+      password: string;
+      fullName?: string;
+      role?: string;
+    },
+    permissionsDto: SetUserPermissionsDto,
+    reportGroupIds: string[]
+  ): Promise<UserWithPermissions> {
+    const user = await this.createUser(dto);
+    await this.setUserPermissions(user.id, permissionsDto);
+    await this.setUserReportGroups(user.id, { reportGroupIds });
+    return this.getUserWithPermissions(user.id) as Promise<UserWithPermissions>;
+  }
+
+  /**
+   * Cập nhật user đầy đủ.
+   */
+  async updateUserFull(
+    userId: string,
+    userDto: { fullName?: string; role?: string; isActive?: boolean; password?: string },
+    permissionsDto: SetUserPermissionsDto | null,
+    reportGroupIds: string[]
+  ): Promise<UserWithPermissions | null> {
+    const user = await this.updateUser(userId, userDto);
+    if (!user) return null;
+    if (permissionsDto !== null) {
+      await this.setUserPermissions(userId, permissionsDto);
+    }
+    await this.setUserReportGroups(userId, { reportGroupIds });
+    return this.getUserWithPermissions(userId);
+  }
 }
 
 export const authService = new AuthService();
@@ -153,6 +412,11 @@ export class ReportService {
     return report;
   }
 
+  /**
+   * Lấy danh sách báo cáo cho user.
+   * - Admin: thấy tất cả báo cáo
+   * - User thường: chỉ thấy báo cáo thuộc nhóm được cấp quyền xem
+   */
   async getReportsForUser(userId: string, role: string): Promise<Report[]> {
     let reports: Report[];
     if (role === 'admin') {
@@ -160,8 +424,8 @@ export class ReportService {
     } else {
       reports = configDb<Report>(
         `SELECT DISTINCT r.* FROM Reports r
-         INNER JOIN ReportPermissions rp ON r.id = rp.reportId
-         WHERE rp.userId = $userId AND rp.canView = 1
+         INNER JOIN UserReportGroupPermissions urgp ON r.reportGroupId = urgp.reportGroupId
+         WHERE urgp.userId = $userId
          ORDER BY r.groupName, r.name`,
         { userId }
       );
@@ -190,8 +454,8 @@ export class ReportService {
   async createReport(dto: CreateReportDto, createdBy: string): Promise<Report> {
     const id = uuidv4();
     configExec(
-      `INSERT INTO Reports (id, name, groupName, groupIcon, spName, description, templateFile, createdBy)
-       VALUES ($id, $name, $groupName, $groupIcon, $spName, $description, $templateFile, $createdBy)`,
+      `INSERT INTO Reports (id, name, groupName, groupIcon, spName, description, templateFile, reportGroupId, createdBy)
+       VALUES ($id, $name, $groupName, $groupIcon, $spName, $description, $templateFile, $reportGroupId, $createdBy)`,
       {
         id,
         name: dto.name,
@@ -200,6 +464,7 @@ export class ReportService {
         spName: dto.spName,
         description: dto.description || null,
         templateFile: dto.templateFile || null,
+        reportGroupId: (dto as any).reportGroupId || null,
         createdBy,
       }
     );
@@ -216,6 +481,7 @@ export class ReportService {
     if (dto.description !== undefined) { updates.push('description = $description'); params.description = dto.description; }
     if (dto.templateFile !== undefined) { updates.push('templateFile = $templateFile'); params.templateFile = dto.templateFile; }
     if (dto.spName !== undefined) { updates.push('spName = $spName'); params.spName = dto.spName; }
+    if ((dto as any).reportGroupId !== undefined) { updates.push('reportGroupId = $reportGroupId'); params.reportGroupId = (dto as any).reportGroupId; }
 
     if (updates.length === 0) return this.getReportById(id);
     updates.push("updatedAt = datetime('now')");

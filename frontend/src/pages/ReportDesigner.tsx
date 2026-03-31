@@ -9,7 +9,7 @@ import { Modal } from '../components/ui/Modal';
 import { EmptyState, Badge } from '../components/ui/Card';
 import { useToast } from '../contexts/ToastContext';
 import { adminReportApi, systemApi } from '../api/report.api';
-import type { Report, ReportGroup, SPMetadata, CreateReportDto, CreateParamDto, CreateMappingDto, ReportParameter, ReportMapping, TestRunResult } from '../types';
+import type { Report, ReportGroupView, SPMetadata, CreateReportDto, CreateParamDto, CreateMappingDto, ReportParameter, ReportMapping, TestRunResult } from '../types';
 
 const DEFAULT_GROUPS = [
   { value: 'Tổng hợp', label: '📂 Tổng hợp' },
@@ -27,7 +27,7 @@ export const ReportDesigner: React.FC = () => {
 
   // State
   const [reports, setReports] = useState<Report[]>([]);
-  const [groups, setGroups] = useState<ReportGroup[]>([]);
+  const [groups, setGroups] = useState<ReportGroupView[]>([]);
   const [loading, setLoading] = useState(true);
   const [spList, setSpList] = useState<string[]>([]);
   const [spLoading, setSpLoading] = useState(false);

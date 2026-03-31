@@ -42,17 +42,26 @@ const initSchema = (db: Database.Database) => {
     );
 
     CREATE TABLE IF NOT EXISTS Reports (
+      id             TEXT PRIMARY KEY,
+      name           TEXT NOT NULL,
+      groupName      TEXT DEFAULT 'Tổng hợp',
+      groupIcon      TEXT DEFAULT '📂',
+      spName         TEXT NOT NULL,
+      description    TEXT,
+      templateFile   TEXT,
+      reportGroupId  TEXT,
+      createdBy      TEXT,
+      createdAt      TEXT DEFAULT (datetime('now')),
+      updatedAt      TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (createdBy) REFERENCES Users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS ReportGroups (
       id           TEXT PRIMARY KEY,
       name         TEXT NOT NULL,
-      groupName    TEXT DEFAULT 'Tổng hợp',
-      groupIcon    TEXT DEFAULT '📂',
-      spName       TEXT NOT NULL,
-      description  TEXT,
-      templateFile TEXT,
-      createdBy    TEXT,
-      createdAt    TEXT DEFAULT (datetime('now')),
-      updatedAt    TEXT DEFAULT (datetime('now')),
-      FOREIGN KEY (createdBy) REFERENCES Users(id)
+      icon         TEXT DEFAULT '📂',
+      displayOrder INTEGER DEFAULT 0,
+      createdAt    TEXT DEFAULT (datetime('now'))
     );
 
     CREATE TABLE IF NOT EXISTS ReportParameters (
@@ -69,13 +78,14 @@ const initSchema = (db: Database.Database) => {
     );
 
     CREATE TABLE IF NOT EXISTS ReportMappings (
-      id           TEXT PRIMARY KEY,
-      reportId     TEXT NOT NULL,
-      fieldName    TEXT NOT NULL,
-      cellAddress  TEXT,
-      mappingType  TEXT DEFAULT 'list',
-      displayOrder INTEGER DEFAULT 0,
-      sheetName    TEXT,
+      id              TEXT PRIMARY KEY,
+      reportId        TEXT NOT NULL,
+      fieldName       TEXT NOT NULL,
+      cellAddress     TEXT,
+      mappingType     TEXT DEFAULT 'list',
+      displayOrder    INTEGER DEFAULT 0,
+      sheetName       TEXT,
+      recordsetIndex  INTEGER DEFAULT 0,
       FOREIGN KEY (reportId) REFERENCES Reports(id) ON DELETE CASCADE
     );
 
@@ -88,6 +98,27 @@ const initSchema = (db: Database.Database) => {
       FOREIGN KEY (reportId) REFERENCES Reports(id) ON DELETE CASCADE,
       FOREIGN KEY (userId) REFERENCES Users(id) ON DELETE CASCADE,
       UNIQUE(reportId, userId)
+    );
+
+    CREATE TABLE IF NOT EXISTS UserPermissions (
+      id              TEXT PRIMARY KEY,
+      userId          TEXT NOT NULL UNIQUE,
+      canCreateReport INTEGER DEFAULT 0,
+      canEditReport   INTEGER DEFAULT 0,
+      canDeleteReport INTEGER DEFAULT 0,
+      canCreateGroup  INTEGER DEFAULT 0,
+      canEditGroup    INTEGER DEFAULT 0,
+      canDeleteGroup  INTEGER DEFAULT 0,
+      FOREIGN KEY (userId) REFERENCES Users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS UserReportGroupPermissions (
+      id             TEXT PRIMARY KEY,
+      userId          TEXT NOT NULL,
+      reportGroupId   TEXT NOT NULL,
+      FOREIGN KEY (userId) REFERENCES Users(id) ON DELETE CASCADE,
+      FOREIGN KEY (reportGroupId) REFERENCES ReportGroups(id) ON DELETE CASCADE,
+      UNIQUE(userId, reportGroupId)
     );
 
     CREATE TABLE IF NOT EXISTS AuditLogs (
@@ -119,6 +150,104 @@ const initSchema = (db: Database.Database) => {
       db.exec('ALTER TABLE ReportMappings ADD COLUMN recordsetIndex INTEGER DEFAULT 0');
     }
   } catch (_) { /* ignore if table doesn't exist yet */ }
+
+  // Migration: thêm cột reportGroupId vào Reports nếu chưa có
+  try {
+    const colInfo = db.prepare("PRAGMA table_info(Reports)").all() as { name: string }[];
+    const hasReportGroupId = colInfo.some(c => c.name === 'reportGroupId');
+    if (!hasReportGroupId) {
+      db.exec('ALTER TABLE Reports ADD COLUMN reportGroupId TEXT');
+    }
+  } catch (_) { /* ignore if table doesn't exist yet */ }
+
+  // Migration: tạo bảng ReportGroups nếu chưa có (backup cho CREATE TABLE IF NOT EXISTS)
+  try {
+    const tableInfo = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='ReportGroups'").get();
+    if (!tableInfo) {
+      db.exec(`
+        CREATE TABLE ReportGroups (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          icon TEXT DEFAULT '📂',
+          displayOrder INTEGER DEFAULT 0,
+          createdAt TEXT DEFAULT (datetime('now'))
+        )
+      `);
+    }
+  } catch (_) { /* ignore */ }
+
+  // Migration: tạo bảng UserPermissions nếu chưa có
+  try {
+    const tableInfo = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='UserPermissions'").get();
+    if (!tableInfo) {
+      db.exec(`
+        CREATE TABLE UserPermissions (
+          id TEXT PRIMARY KEY,
+          userId TEXT NOT NULL UNIQUE,
+          canCreateReport INTEGER DEFAULT 0,
+          canEditReport INTEGER DEFAULT 0,
+          canDeleteReport INTEGER DEFAULT 0,
+          canCreateGroup INTEGER DEFAULT 0,
+          canEditGroup INTEGER DEFAULT 0,
+          canDeleteGroup INTEGER DEFAULT 0,
+          FOREIGN KEY (userId) REFERENCES Users(id) ON DELETE CASCADE
+        )
+      `);
+    }
+  } catch (_) { /* ignore */ }
+
+  // Migration: tạo bảng UserReportGroupPermissions nếu chưa có
+  try {
+    const tableInfo = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='UserReportGroupPermissions'").get();
+    if (!tableInfo) {
+      db.exec(`
+        CREATE TABLE UserReportGroupPermissions (
+          id TEXT PRIMARY KEY,
+          userId TEXT NOT NULL,
+          reportGroupId TEXT NOT NULL,
+          FOREIGN KEY (userId) REFERENCES Users(id) ON DELETE CASCADE,
+          FOREIGN KEY (reportGroupId) REFERENCES ReportGroups(id) ON DELETE CASCADE,
+          UNIQUE(userId, reportGroupId)
+        )
+      `);
+    }
+  } catch (_) { /* ignore */ }
+
+  // Seed: tạo nhóm báo cáo mặc định "Tổng hợp" nếu chưa có
+  try {
+    const groupCount = db.prepare('SELECT COUNT(*) as cnt FROM ReportGroups').get() as { cnt: number };
+    if (groupCount.cnt === 0) {
+      db.exec(`INSERT INTO ReportGroups (id, name, icon, displayOrder) VALUES ('${uuidv4()}', 'Tổng hợp', '📂', 0)`);
+    }
+  } catch (_) { /* ignore */ }
+
+  // Seed: gán UserPermissions mặc định cho admin
+  try {
+    const admin = db.prepare('SELECT id FROM Users WHERE username = ?').get('admin') as { id: string } | undefined;
+    if (admin) {
+      const permExists = db.prepare('SELECT id FROM UserPermissions WHERE userId = ?').get(admin.id);
+      if (!permExists) {
+        db.exec(
+          `INSERT INTO UserPermissions (id, userId, canCreateReport, canEditReport, canDeleteReport, canCreateGroup, canEditGroup, canDeleteGroup)
+           VALUES ('${uuidv4()}', '${admin.id}', 1, 1, 1, 1, 1, 1)`
+        );
+      }
+    }
+  } catch (_) { /* ignore */ }
+
+  // Seed: gán UserReportGroupPermissions cho admin (thấy tất cả nhóm)
+  try {
+    const admin = db.prepare('SELECT id FROM Users WHERE username = ?').get('admin') as { id: string } | undefined;
+    if (admin) {
+      const groups = db.prepare('SELECT id FROM ReportGroups').all() as { id: string }[];
+      for (const g of groups) {
+        const exists = db.prepare('SELECT id FROM UserReportGroupPermissions WHERE userId = ? AND reportGroupId = ?').get(admin.id, g.id);
+        if (!exists) {
+          db.exec(`INSERT INTO UserReportGroupPermissions (id, userId, reportGroupId) VALUES ('${uuidv4()}', '${admin.id}', '${g.id}')`);
+        }
+      }
+    }
+  } catch (_) { /* ignore */ }
 
   // Seed users nếu chưa có
   const adminExists = db.prepare('SELECT 1 FROM Users WHERE username = ?').get('admin');

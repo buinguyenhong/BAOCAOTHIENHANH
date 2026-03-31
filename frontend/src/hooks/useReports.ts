@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import { reportApi } from '../api/report.api';
-import type { Report, QueryResult, ReportGroup } from '../types';
+import type { Report, QueryResult, ReportGroupView } from '../types';
 
 export const useReports = () => {
   const [reports, setReports] = useState<Report[]>([]);
@@ -62,19 +62,19 @@ export const useReports = () => {
     }
   }, []);
 
-  // Group reports by groupName
-  const reportGroups: ReportGroup[] = useMemo(() => {
+  // Group reports by groupName (ReportGroupView)
+  const reportGroups: ReportGroupView[] = useMemo(() => {
     const map = new Map<string, Report[]>();
     reports.forEach((r) => {
       const key = r.groupName || 'Khác';
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(r);
     });
-    return Array.from(map.entries()).map(([name, reports]) => ({
+    return Array.from(map.entries()).map(([name, rpts]) => ({
       id: name.toLowerCase().replace(/\s+/g, '-'),
       name,
-      icon: reports[0]?.groupIcon || '📂',
-      reports,
+      icon: rpts[0]?.groupIcon || '📂',
+      reports: rpts,
     }));
   }, [reports]);
 

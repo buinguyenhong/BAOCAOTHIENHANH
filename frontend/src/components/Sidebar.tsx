@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import type { ReportGroup } from '../types';
+import type { ReportGroupView } from '../types';
 
 interface SidebarProps {
-  groups: ReportGroup[];
+  groups: ReportGroupView[];
   onSelectReport?: (reportId: string) => void;
   onClose?: () => void;
   activeReportId?: string;
@@ -29,7 +29,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   activeReportId,
 }) => {
   const location = useLocation();
-  const { isAdmin } = useAuth();
+  const { isAdmin, actionPerms } = useAuth();
   const [searchTerm, setSearchTerm] = useState('');
 
   const filteredGroups = groups.map((group) => ({
@@ -168,6 +168,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <p className="text-[11px] text-slate-500">
             {isAdmin ? 'Quản trị viên' : 'Người dùng'} · {new Date().toLocaleDateString('vi-VN')}
           </p>
+          {/* Quyền hành động (hiển thị cho non-admin) */}
+          {!isAdmin && (
+            <div className="mt-1 flex flex-wrap gap-0.5">
+              {actionPerms.canCreateReport && <span className="text-[9px] bg-green-100 text-green-700 px-1 rounded">+BC</span>}
+              {actionPerms.canEditReport && <span className="text-[9px] bg-blue-100 text-blue-700 px-1 rounded">✏️BC</span>}
+              {actionPerms.canDeleteReport && <span className="text-[9px] bg-red-100 text-red-700 px-1 rounded">−BC</span>}
+            </div>
+          )}
         </div>
       </div>
     </aside>

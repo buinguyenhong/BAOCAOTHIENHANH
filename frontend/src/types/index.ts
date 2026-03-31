@@ -9,6 +9,64 @@ export interface User {
   updatedAt?: string;
 }
 
+// User Permissions (admin action permissions)
+export interface UserPermission {
+  id: string;
+  userId: string;
+  canCreateReport: boolean;
+  canEditReport: boolean;
+  canDeleteReport: boolean;
+  canCreateGroup: boolean;
+  canEditGroup: boolean;
+  canDeleteGroup: boolean;
+}
+
+export interface SetUserPermissionsDto {
+  canCreateReport?: boolean;
+  canEditReport?: boolean;
+  canDeleteReport?: boolean;
+  canCreateGroup?: boolean;
+  canEditGroup?: boolean;
+  canDeleteGroup?: boolean;
+}
+
+// Report Group (standalone — từ backend)
+export interface ReportGroup {
+  id: string;
+  name: string;
+  icon: string;
+  displayOrder: number;
+  createdAt?: string;
+}
+
+// ReportGroup với danh sách báo cáo (cho Sidebar)
+export interface ReportGroupView {
+  id: string;
+  name: string;
+  icon: string;
+  reports: Report[];
+}
+
+export interface CreateReportGroupDto {
+  name: string;
+  icon?: string;
+  displayOrder?: number;
+}
+
+// User ↔ ReportGroup permissions
+export interface UserReportGroupPermission {
+  id: string;
+  userId: string;
+  reportGroupId: string;
+}
+
+// Full user payload for management UI
+export interface UserWithPermissions {
+  user: Omit<User, 'password'>;
+  permissions: UserPermission | null;
+  reportGroupIds: string[];
+}
+
 // Auth
 export interface LoginResponse {
   token: string;
@@ -59,20 +117,13 @@ export interface Report {
   spName: string;
   description: string | null;
   templateFile: string | null;
+  reportGroupId: string | null;
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;
   parameters: ReportParameter[];
   mappings: ReportMapping[];
   permissions?: ReportPermission[];
-}
-
-// Report Group
-export interface ReportGroup {
-  id: string;
-  name: string;
-  icon: string;
-  reports: Report[];
 }
 
 // Query Result
