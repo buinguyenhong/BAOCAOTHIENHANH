@@ -30,7 +30,7 @@ export interface ReportParameter {
 }
 
 // Report Mapping
-export type MappingType = 'scalar' | 'list';
+export type MappingType = 'scalar' | 'list' | 'param';
 export interface ReportMapping {
   id: string;
   reportId: string;

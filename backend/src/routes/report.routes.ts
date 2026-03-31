@@ -348,6 +348,28 @@ router.put(
   }
 );
 
+// GET /api/reports/:id/template/sheets - Lấy danh sách sheet từ template
+router.get(
+  '/reports/:id/template/sheets',
+  authMiddleware,
+  adminMiddleware,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const report = await reportService.getReportById((req.params as any).id as string);
+      if (!report) {
+        return res.status(404).json({ success: false, error: 'Không tìm thấy báo cáo' });
+      }
+      if (!report.templateFile) {
+        return res.json({ success: true, data: [] });
+      }
+      const sheets = await reportService.getTemplateSheets(report.templateFile);
+      res.json({ success: true, data: sheets });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  }
+);
+
 // PUT /api/reports/:id/template - Upload template file
 router.put(
   '/reports/:id/template',

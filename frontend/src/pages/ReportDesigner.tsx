@@ -238,7 +238,7 @@ export const ReportDesigner: React.FC = () => {
     setShowForm(true);
   };
 
-  const openEditForm = (report: Report) => {
+  const openEditForm = async (report: Report) => {
     setEditingReport(report);
     setFormName(report.name);
     setFormGroup(report.groupName || 'Tổng hợp');
@@ -256,23 +256,52 @@ export const ReportDesigner: React.FC = () => {
         options: p.options || [],
       }))
     );
-    setFormMappings(
-      (report.mappings || []).map((m) => ({
-        fieldName: m.fieldName,
-        cellAddress: m.cellAddress || '',
-        mappingType: m.mappingType,
-        displayOrder: m.displayOrder,
-        sheetName: m.sheetName || undefined,
-      }))
-    );
+
+    // Build allResultSetMappings from saved mappings, grouping by resultSetIndex
+    const loadedMappings = (report.mappings || []).map((m) => ({
+      fieldName: m.fieldName,
+      cellAddress: m.cellAddress || '',
+      mappingType: m.mappingType,
+      displayOrder: m.displayOrder,
+      sheetName: m.sheetName || undefined,
+      resultSetIndex: (m as any).resultSetIndex ?? 0,
+    }));
+
+    const grouped: Record<number, CreateMappingDto[]> = {};
+    loadedMappings.forEach((m) => {
+      const idx = m.resultSetIndex ?? 0;
+      if (!grouped[idx]) grouped[idx] = [];
+      grouped[idx].push(m);
+    });
+
+    setAllResultSetMappings(grouped);
+    // Show mappings from result set 0 (or first available)
+    const firstRsIdx = Object.keys(grouped).map(Number).sort((a, b) => a - b)[0] ?? 0;
+    setFormMappings(grouped[firstRsIdx] || []);
+    setSelectedResultSet(firstRsIdx);
+
     setFormTemplateFile(report.templateFile || '');
     setTemplatePreview('');
     setTestRunResult(null);
     setTestRunError('');
-    setSelectedResultSet(0);
-    setAvailableSheets([]);
     setActiveTab('info');
     setShowForm(true);
+
+    // Load available sheets from template file
+    if (report.templateFile) {
+      try {
+        const res = await adminReportApi.getTemplateSheets(report.id);
+        if (res.success && res.data) {
+          setAvailableSheets(res.data);
+        } else {
+          setAvailableSheets([]);
+        }
+      } catch {
+        setAvailableSheets([]);
+      }
+    } else {
+      setAvailableSheets([]);
+    }
   };
 
   const handleSave = async () => {
@@ -816,7 +845,7 @@ export const ReportDesigner: React.FC = () => {
               formMappings.map((mapping, idx) => (
                 <div key={idx} className="grid grid-cols-12 gap-2 items-end p-4 bg-slate-50 rounded-2xl border border-slate-200">
                   <div className="col-span-4">
-                    <Input label="Tên cột (Field)" value={mapping.fieldName} disabled className="bg-white uppercase" />
+                    <Input label={mapping.mappingType === 'param' ? 'Tham số' : 'Cột dữ liệu'} value={mapping.fieldName} disabled className="bg-white uppercase" />
                   </div>
                   <div className="col-span-3">
                     <Input
@@ -835,6 +864,7 @@ export const ReportDesigner: React.FC = () => {
                       options={[
                         { value: 'list', label: '📋 Danh sách (nhiều dòng)' },
                         { value: 'scalar', label: '🔢 Giá trị đơn (1 ô)' },
+                        { value: 'param', label: '⚙️ Tham số (giá trị nhập)' },
                       ]}
                     />
                   </div>
@@ -864,14 +894,53 @@ export const ReportDesigner: React.FC = () => {
                 </div>
               ))
             )}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setFormMappings((m) => [...m, { fieldName: '', cellAddress: '', mappingType: 'list', displayOrder: m.length + 1 }])}
-              icon={<span>➕</span>}
-            >
-              Thêm mapping
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  const existingParamFields = new Set(
+                    formMappings.filter(m => m.mappingType === 'param').map(m => m.fieldName)
+                  );
+                  const newParamMappings: CreateMappingDto[] = formParams
+                    .filter(p => p.paramName && !existingParamFields.has(p.paramName))
+                    .map((p, idx) => ({
+                      // Strip @ prefix so it matches the params object key (no @)
+                      fieldName: p.paramName.replace(/^@/, ''),
+                      cellAddress: '',
+                      mappingType: 'param' as const,
+                      displayOrder: formMappings.length + idx + 1,
+                      resultSetIndex: selectedResultSet,
+                    }));
+                  if (newParamMappings.length > 0) {
+                    setFormMappings(prev => [...prev, ...newParamMappings]);
+                    setAllResultSetMappings(prev => {
+                      const updated = { ...prev };
+                      if (!updated[selectedResultSet]) updated[selectedResultSet] = [];
+                      updated[selectedResultSet] = [
+                        ...(updated[selectedResultSet] || []),
+                        ...newParamMappings,
+                      ];
+                      return updated;
+                    });
+                    success(`Đã thêm ${newParamMappings.length} tham số vào mapping`);
+                  } else {
+                    showError('Tất cả tham số đã có trong mapping');
+                  }
+                }}
+                icon={<span>⚙️</span>}
+              >
+                Detect tham số
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setFormMappings((m) => [...m, { fieldName: '', cellAddress: '', mappingType: 'list', displayOrder: m.length + 1, resultSetIndex: selectedResultSet }])}
+                icon={<span>➕</span>}
+              >
+                Thêm mapping
+              </Button>
+            </div>
           </div>
         )}
       </Modal>

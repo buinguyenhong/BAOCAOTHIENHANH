@@ -382,6 +382,16 @@ export class ReportService {
     const filePath = path.join(__dirname, '../../templates', templateFile);
     return fs.existsSync(filePath) ? filePath : null;
   }
+
+  async getTemplateSheets(templateFile: string): Promise<string[]> {
+    if (!templateFile) return [];
+    const filePath = this.getTemplatePath(templateFile);
+    if (!filePath) return [];
+    const ExcelJS = (await import('exceljs')).default;
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(fs.readFileSync(filePath).buffer as ArrayBuffer);
+    return wb.worksheets.map(ws => ws.name);
+  }
 }
 
 export const reportService = new ReportService();

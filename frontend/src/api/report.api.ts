@@ -104,6 +104,11 @@ export const adminReportApi = {
       reader.readAsDataURL(file);
     });
   },
+
+  getTemplateSheets: async (reportId: string): Promise<ApiResponse<string[]>> => {
+    const res = await api.get<ApiResponse<string[]>>(`/reports/${reportId}/template/sheets`);
+    return res.data;
+  },
 };
 
 // SYSTEM endpoints

@@ -5,7 +5,7 @@
 
 ## Vị trí Dự án
 ```
-D:\Project\hospital-report-server\
+D:\Project\BAOCAOTHIENHANH\BAOCAOTHIENHANH\
 ```
 
 ## Mục tiêu dự án
@@ -15,6 +15,7 @@ Xây dựng hệ thống báo cáo nội bộ LAN cho bệnh viện, cho phép:
 - Auto fill @TuNgay/@DenNgay khi test run không có params
 - Multi-recordsets: SP trả về nhiều result sets → hiển thị dropdown chọn, xuất Excel mỗi recordset ra sheet riêng
 - Multi-result-set mappings: giữ mappings riêng cho từng result set
+- 3 loại mapping: **Giá trị đơn (scalar)**, **Danh sách (list)**, **Tham số (param)**
 - Phân quyền user xem báo cáo cụ thể
 - Export Excel chính xác theo template + mapping (multi-sheet, multi-recordset)
 - Upload file template Excel mẫu (multi-sheet)
@@ -41,7 +42,7 @@ HospitalDB (MSSQL) - Chỉ gọi SP, cấu hình qua SystemConfig
 ## Cấu trúc thư mục
 
 ```
-hospital-report-server/
+BAOCAOTHIENHANH/
 ├── backend/
 │   ├── src/
 │   │   ├── index.ts                 # Entry point (port 5000)
@@ -91,12 +92,14 @@ hospital-report-server/
 │   │   │   ├── AuthContext.tsx
 │   │   │   └── ToastContext.tsx
 │   │   ├── api/
+│   │   │   └── report.api.ts
 │   │   ├── hooks/
 │   │   │   └── useReports.ts
 │   │   └── types/
+│   │       └── index.ts
 │   └── dist/                        # Build output
 │
-└── README.md
+└── PROJECT_SUMMARY.md
 ```
 
 ---
@@ -113,20 +116,19 @@ hospital-report-server/
 | `Users` | Tài khoản người dùng (id, username, password hash, role) |
 | `Reports` | Cấu hình báo cáo (name, spName, group, templateFile) |
 | `ReportParameters` | Tham số của báo cáo (paramName, paramType, defaultValue) |
-| `ReportMappings` | Mapping cột → ô Excel (cellAddress, scalar/list, sheetName) |
+| `ReportMappings` | Mapping cột → ô Excel (cellAddress, scalar/list/param, sheetName) |
 | `ReportPermissions` | Quyền user × report (canView, canExport) |
 | `AuditLogs` | Log hành động (LOGIN, RUN_REPORT, EXPORT...) |
 
 ### Schema chi tiết:
 
 ```sql
--- ReportMappings (đã có sheetName)
 CREATE TABLE ReportMappings (
   id           TEXT PRIMARY KEY,
   reportId     TEXT NOT NULL,
   fieldName    TEXT NOT NULL,
   cellAddress  TEXT,
-  mappingType  TEXT DEFAULT 'list',  -- 'scalar' | 'list'
+  mappingType  TEXT DEFAULT 'list',  -- 'scalar' | 'list' | 'param'
   displayOrder INTEGER DEFAULT 0,
   sheetName    TEXT,                  -- sheet đích, null = first sheet
   FOREIGN KEY (reportId) REFERENCES Reports(id) ON DELETE CASCADE
@@ -155,41 +157,49 @@ CREATE TABLE ReportMappings (
 - MSSQL driver: strip `@` prefix khi binding params
 - Hỗ trợ types: `text`, `date`, `number`, `select`
 
-### 2. Multi-Recordsets Support
+### 2. 3 Loại Mapping
+- **Giá trị đơn (scalar):** Chỉ map giá trị, không điền tên. Ví dụ: `TONGSOCANHAPVIEN : A10` → chỉ truyền giá trị tính ra vào ô A10.
+- **Danh sách (list):** Ô được map là ô đầu tiên của cột. Ví dụ: `BENHNHAN_ID : A4` → giá trị đầu tiên vào A4, giá trị tiếp theo vào A5, A6... cho đến hết.
+- **Tham số (param):** Tham số được detect tự động từ SP parameters, tạo trong bảng mapping với type `param`, có thể chọn ô để gắn hoặc để trống.
+
+### 3. Multi-Recordsets Support
 - SP có thể trả về nhiều result sets
 - Backend `testRun` trả về `recordsets[]` — mảng tất cả recordsets
 - Frontend hiển thị dropdown chọn result set trong ReportDesigner
 - Export Excel: mỗi recordset ghi vào sheet tương ứng (theo index hoặc sheetName)
 
-### 3. Multi-Result-Set Mappings
+### 4. Multi-Result-Set Mappings
 - Mỗi result set có mappings riêng (`allResultSetMappings`)
 - Khi chuyển result set → hiển thị mappings tương ứng
 - Khi edit mapping → cập nhật cả formMappings và allResultSetMappings
 - Khi save → gộp tất cả mappings từ mọi result sets
 
-### 4. Excel Export (Multi-Sheet, Multi-Recordset)
-- **Có template:** Load template .xlsx, giữ nguyên header/footer/template rows
+### 5. Excel Export (Multi-Sheet, Multi-Recordset)
+- **Có template:** Load template .xlsx, giữ nguyên header/footer/template rows (font, border, fill, alignment, number format, protection)
 - **Không template:** Tự tạo sheet "Báo cáo" + "Sheet2", "Sheet3"...
-- **Multi-recordset:** Mỗi recordset index i → ghi vào workbook sheet i
-- **Scalar mapping:** Ghi giá trị params vào 1 ô. Áp dụng lên **tất cả sheets**
-- **List mapping (có sheetName):** Ghi dữ liệu vào sheet chỉ định
-- **List mapping (không sheetName):** Ghi dữ liệu vào **tất cả sheets** với recordset 0
-- Copy formatting từ template row → các dòng chèn mới
-- Smart type detection (number vs text)
-- Insert rows bằng `spliceRows()` (không dùng `insertRows` vì ExcelJS yêu cầu array)
+- **Row tracker per sheet:** `_sheetRowTracker` đảm bảo tất cả list columns trong cùng sheet bắt đầu cùng dòng và tăng đều, không chèn đè lên nhau
+- **Scalar/param mapping:** Chỉ fill trên đúng sheet được chỉ định (hoặc sheet đầu tiên nếu không chỉ định), không fill trùng lên mọi sheets
+- **Param key matching:** Tự động strip `@` prefix để khớp với params object key (`@TuNgay` → `TuNgay`)
+- **Smart type detection:** Tự nhận diện number vs text
+- **Preserve template formatting:** Snapshot style trước khi ghi value, restore sau — giữ nguyên font, border, fill, alignment, number format
 
-### 5. Template Upload + Sheet Detection
+### 6. Sheet Selection Persistence
+- Khi edit báo cáo đã có template: gọi `GET /reports/:id/template/sheets` để load danh sách sheets từ file template
+- Dropdown sheet trong tab Mapping hiển thị đúng sheets đã chọn trước đó
+- Không còn reset về "Mặc định (sheet 1)" khi mở lại báo cáo
+
+### 7. Template Upload + Sheet Detection
 - Khi upload file .xlsx, frontend dùng ExcelJS để parse và lấy danh sách sheet names
 - Dropdown sheet trong tab Mapping cho phép chọn sheet đích cho mỗi mapping
 - Auto-detect mappings khi chạy thử → tự gán `sheetName = availableSheets[0]`
 
-### 6. Phân quyền
+### 8. Phân quyền
 - Ma trận User × Report
 - Checkbox: Xem / Xuất Excel
 - Admin luôn có full quyền
 - Bulk assign permissions
 
-### 7. Audit Log
+### 9. Audit Log
 Ghi lại: LOGIN, LOGOUT, RUN_REPORT, EXPORT_REPORT, CREATE/UPDATE/DELETE_REPORT, CREATE/UPDATE/DELETE_USER, SET_PERMISSION, UPDATE_CONFIG
 
 ---
@@ -210,6 +220,7 @@ Ghi lại: LOGIN, LOGOUT, RUN_REPORT, EXPORT_REPORT, CREATE/UPDATE/DELETE_REPORT
 
 ### Admin
 - `GET/POST/PUT/DELETE /api/reports`
+- `GET /api/reports/:id/template/sheets` — Lấy danh sách sheet từ template file (mới)
 - `PUT /api/reports/:id/parameters`
 - `PUT /api/reports/:id/mappings` — Lưu mappings kèm sheetName
 - `PUT /api/reports/:id/template` — Upload template file
@@ -223,21 +234,39 @@ Ghi lại: LOGIN, LOGOUT, RUN_REPORT, EXPORT_REPORT, CREATE/UPDATE/DELETE_REPORT
 
 ---
 
+## Các file thay đổi trong ngày (2026-03-31)
+
+| File | Thay đổi |
+|------|----------|
+| `frontend/tsconfig.node.json` | Thêm `"composite": true` |
+| `frontend/package.json` | Thêm `terser` |
+| `frontend/src/api/report.api.ts` | Thêm `getTemplateSheets()` API |
+| `frontend/src/pages/ReportDesigner.tsx` | Fix sheet persistence, thêm param mapping, fix auto-detect strip `@` |
+| `frontend/src/types/index.ts` | Thêm `'param'` vào `MappingType` |
+| `backend/src/models/types.ts` | Thêm `'param'` vào `MappingType` |
+| `backend/src/routes/report.routes.ts` | Thêm endpoint `GET /reports/:id/template/sheets` |
+| `backend/src/services/auth.service.ts` | Thêm `getTemplateSheets()` |
+| `backend/src/services/excel.service.ts` | Viết lại export: rowTracker, param key matching, preserve formatting |
+
+---
+
 ## Cách cài đặt
 
 ### 1. Backend
 ```bash
-cd D:\Project\hospital-report-server\backend
+cd D:\Project\BAOCAOTHIENHANH\BAOCAOTHIENHANH\backend
 npm install
+npm run build
 # Sửa .env với thông tin SQL Server (HospitalDB)
 npm run dev
 ```
 
 ### 2. Frontend
 ```bash
-cd D:\Project\hospital-report-server\frontend
+cd D:\Project\BAOCAOTHIENHANH\BAOCAOTHIENHANH\frontend
 npm install
 npm run build
+npm run dev
 ```
 
 ---
@@ -272,7 +301,10 @@ netsh advfirewall firewall add rule name="HIS Reports" dir=in action=allow proto
    - Tạo mới → Chọn SP → **Chạy thử** (auto fill @TuNgay/@DenNgay)
    - Nếu SP trả về nhiều recordsets → dùng dropdown chọn result set
    - Upload template .xlsx → sheet names được parse tự động
-   - Với mỗi result set → thiết lập mappings (scalar/list) + chọn sheet đích
+   - Với mỗi result set → thiết lập mappings:
+     - **Danh sách (list):** map cột dữ liệu, chọn sheet đích
+     - **Giá trị đơn (scalar):** map giá trị tính toán, chọn sheet
+     - **Tham số (param):** nhấn "Detect tham số" hoặc thêm thủ công, map vào ô mong muốn
    - Lưu báo cáo (tất cả mappings từ mọi result sets được lưu)
 4. **Phân quyền** → Gán báo cáo cho user
 
@@ -280,7 +312,7 @@ netsh advfirewall firewall add rule name="HIS Reports" dir=in action=allow proto
 1. Đăng nhập
 2. Chọn báo cáo → Nhập tham số (ngày tháng)
 3. Nhấn **Chạy báo cáo** → Xem dữ liệu
-4. Nhấn **Xuất Excel** → Tải file
+4. Nhấn **Xuất Excel** → Tải file (template formatting được giữ nguyên, dữ liệu điền đúng sheet/cột)
 
 ---
 
@@ -292,6 +324,19 @@ netsh advfirewall firewall add rule name="HIS Reports" dir=in action=allow proto
 4. `sheetName` trong `ReportMappings` cho phép mapping vào bất kỳ sheet nào của template
 5. SP trả về nhiều recordsets → mỗi recordset ghi vào sheet theo thứ tự
 6. MSSQL driver cần strip `@` prefix khi binding parameters
+7. **Param mapping:** `fieldName` trong mapping nên không có `@` để khớp với params object key. Backend tự strip `@` khi tìm giá trị.
+
+---
+
+## Bug đã fix (2026-03-31)
+
+1. **Sheet selection bị reset:** Khi mở báo cáo để sửa, dropdown sheet luôn về "Mặc định (sheet 1)" → Đã fix bằng cách gọi API load sheets từ template file.
+2. **Sheet selection bị xóa khi lưu:** `allResultSetMappings` bị reset rỗng khi mở edit form → Đã fix bằng cách rebuild từ `report.mappings` đã lưu trong DB.
+3. **Dữ liệu list mapping đè nhau:** Nhiều cột list cùng bắt đầu dòng 4 nhưng chèn dòng riêng lẻ → Đã fix bằng `_sheetRowTracker` per sheet.
+4. **Scalar/param bị fill trùng trên mọi sheets:** Scalar luôn ghi lên mọi sheet → Đã fix chỉ fill đúng sheet được chỉ định.
+5. **Param mapping không điền được giá trị:** `@TuNgay` không khớp với params key `TuNgay` → Đã fix strip `@` prefix khi tìm giá trị.
+6. **Template formatting bị mất:** Font, màu, border bị reset khi ghi giá trị → Đã fix bằng snapshot/restore style trước và sau khi ghi.
+7. **Frontend build lỗi:** Thiếu `composite: true` trong tsconfig.node.json và thiếu `terser` → Đã fix.
 
 ---
 

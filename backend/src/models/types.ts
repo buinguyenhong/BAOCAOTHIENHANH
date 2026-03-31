@@ -93,7 +93,7 @@ export interface CreateReportParamDto {
 // =====================
 // Report Mapping types
 // =====================
-export type MappingType = 'scalar' | 'list';
+export type MappingType = 'scalar' | 'list' | 'param';
 
 export interface ReportMapping {
   id: string;
