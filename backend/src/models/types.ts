@@ -103,6 +103,12 @@ export interface ReportMapping {
   mappingType: MappingType;
   displayOrder: number;
   sheetName?: string | null;
+  /**
+   * Chỉ định lấy dữ liệu từ recordset nào.
+   * 0 = recordset đầu tiên.
+   * Nếu không có hoặc null → mặc định 0.
+   */
+  recordsetIndex?: number | null;
 }
 
 export interface CreateReportMappingDto {
@@ -111,6 +117,8 @@ export interface CreateReportMappingDto {
   mappingType?: MappingType;
   displayOrder?: number;
   sheetName?: string;
+  /** Chỉ định lấy dữ liệu từ recordset nào. Mặc định 0. */
+  recordsetIndex?: number;
 }
 
 // =====================

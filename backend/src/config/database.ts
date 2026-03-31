@@ -111,6 +111,15 @@ const initSchema = (db: Database.Database) => {
     }
   } catch (_) { /* ignore if table doesn't exist yet */ }
 
+  // Migration: thêm cột recordsetIndex vào ReportMappings nếu chưa có
+  try {
+    const colInfo = db.prepare("PRAGMA table_info(ReportMappings)").all() as { name: string }[];
+    const hasRecordsetIndex = colInfo.some(c => c.name === 'recordsetIndex');
+    if (!hasRecordsetIndex) {
+      db.exec('ALTER TABLE ReportMappings ADD COLUMN recordsetIndex INTEGER DEFAULT 0');
+    }
+  } catch (_) { /* ignore if table doesn't exist yet */ }
+
   // Seed users nếu chưa có
   const adminExists = db.prepare('SELECT 1 FROM Users WHERE username = ?').get('admin');
   if (!adminExists) {

@@ -65,7 +65,8 @@ BAOCAOTHIENHANH/
 │   │   │   └── types.ts
 │   │   └── utils/
 │   │       ├── jwt.ts
-│   │       └── password.ts
+│   │       ├── password.ts
+│   │       └── normalize.ts      # Chuẩn hóa param & row keys (refactor 2026-03-31)
 │   ├── data/
 │   │   └── hisreports.db           # SQLite database
 │   ├── config/
@@ -124,19 +125,21 @@ BAOCAOTHIENHANH/
 
 ```sql
 CREATE TABLE ReportMappings (
-  id           TEXT PRIMARY KEY,
-  reportId     TEXT NOT NULL,
-  fieldName    TEXT NOT NULL,
-  cellAddress  TEXT,
-  mappingType  TEXT DEFAULT 'list',  -- 'scalar' | 'list' | 'param'
-  displayOrder INTEGER DEFAULT 0,
-  sheetName    TEXT,                  -- sheet đích, null = first sheet
+  id              TEXT PRIMARY KEY,
+  reportId        TEXT NOT NULL,
+  fieldName       TEXT NOT NULL,
+  cellAddress     TEXT,
+  mappingType     TEXT DEFAULT 'list',   -- 'scalar' | 'list' | 'param'
+  displayOrder    INTEGER DEFAULT 0,
+  sheetName       TEXT,                   -- sheet đích, null = first sheet
+  recordsetIndex  INTEGER DEFAULT 0,      -- chỉ định recordset nguồn (0 = first)
   FOREIGN KEY (reportId) REFERENCES Reports(id) ON DELETE CASCADE
 );
 ```
 
 ### Migration tự động:
 - Tự động thêm cột `sheetName` nếu chưa có khi khởi động
+- Tự động thêm cột `recordsetIndex` nếu chưa có khi khởi động
 
 ---
 
@@ -176,12 +179,18 @@ CREATE TABLE ReportMappings (
 
 ### 5. Excel Export (Multi-Sheet, Multi-Recordset)
 - **Có template:** Load template .xlsx, giữ nguyên header/footer/template rows (font, border, fill, alignment, number format, protection)
-- **Không template:** Tự tạo sheet "Báo cáo" + "Sheet2", "Sheet3"...
-- **Row tracker per sheet:** `_sheetRowTracker` đảm bảo tất cả list columns trong cùng sheet bắt đầu cùng dòng và tăng đều, không chèn đè lên nhau
-- **Scalar/param mapping:** Chỉ fill trên đúng sheet được chỉ định (hoặc sheet đầu tiên nếu không chỉ định), không fill trùng lên mọi sheets
-- **Param key matching:** Tự động strip `@` prefix để khớp với params object key (`@TuNgay` → `TuNgay`)
-- **Smart type detection:** Tự nhận diện number vs text
-- **Preserve template formatting:** Snapshot style trước khi ghi value, restore sau — giữ nguyên font, border, fill, alignment, number format
+- **Không template:** Tự tạo sheet "Báo cáo" + "Sheet2", "Sheet3"... Nếu không có sheet nào → tạo sheet mặc định "Report"
+- **Block tracker (mới):** Block = `sheetName + recordsetIndex + startRow`. Một block chỉ được `spliceRows()` một lần duy nhất. Tất cả các cột list trong cùng block dùng chung vùng rows, luôn thẳng hàng, không chèn dòng lặp riêng.
+- **recordsetIndex:** Mapping có thể chỉ định rõ lấy dữ liệu từ recordset nào. Mapping cũ không có → mặc định 0.
+- **`fillParam()`:** Chỉ đọc từ `params`, không bao giờ fallback sang `data[0]`.
+- **`fillScalar()`:** Chỉ đọc từ `data[0]` (dòng đầu tiên của recordset), không fallback.
+- **`fillList()`:** Ghi nhiều dòng, dùng block tracker để splice đúng lần.
+- **`resolveRecordset()`:** Lấy đúng recordset theo `recordsetIndex`, fallback về 0.
+- **Normalize param:** `@TuNgay`, `TuNgay`, `tungay` → `TUNGAY` → lookup ổn định.
+- **Normalize row keys:** Tất cả row keys chuyển sang uppercase trước lookup.
+- **Smart type detection:** Tự nhận diện number vs text.
+- **Preserve template formatting:** Snapshot style trước khi ghi value, restore sau.
+- **Mapping validation:** Bỏ qua mapping lỗi (thiếu `mappingType`, `fieldName`, `cellAddress`) với log warning, không crash toàn bộ export.
 
 ### 6. Sheet Selection Persistence
 - Khi edit báo cáo đã có template: gọi `GET /reports/:id/template/sheets` để load danh sách sheets từ file template
@@ -215,8 +224,8 @@ Ghi lại: LOGIN, LOGOUT, RUN_REPORT, EXPORT_REPORT, CREATE/UPDATE/DELETE_REPORT
 ### User (theo quyền)
 - `GET /api/user/reports` — Danh sách báo cáo được phép xem
 - `GET /api/user/reports/:id` — Chi tiết báo cáo
-- `GET /api/user/reports/:id/execute` — Chạy báo cáo, trả về `{ columns, rows, recordsets }`
-- `POST /api/user/reports/:id/export` — Xuất Excel (body: `{ recordsets, params }`)
+- `GET /api/user/reports/:id/execute` — Chạy báo cáo, trả về `{ columns, rows, recordsets }`. Hỗ trợ param có hoặc không có `@` prefix.
+- `POST /api/user/reports/:id/export` — Xuất Excel. **Backend là nguồn dữ liệu thật** — tự gọi lại `executeReport(reportId, params)`. Nếu client gửi `recordsets` trong body → log warning rồi ignore (backward compat).
 
 ### Admin
 - `GET/POST/PUT/DELETE /api/reports`
@@ -247,6 +256,19 @@ Ghi lại: LOGIN, LOGOUT, RUN_REPORT, EXPORT_REPORT, CREATE/UPDATE/DELETE_REPORT
 | `backend/src/routes/report.routes.ts` | Thêm endpoint `GET /reports/:id/template/sheets` |
 | `backend/src/services/auth.service.ts` | Thêm `getTemplateSheets()` |
 | `backend/src/services/excel.service.ts` | Viết lại export: rowTracker, param key matching, preserve formatting |
+
+## Các file thay đổi trong ngày (2026-03-31) — Refactor toàn diện
+
+### Backend refactor
+
+| File | Thay đổi |
+|------|----------|
+| `backend/src/utils/normalize.ts` | **MỚI** — utility chuẩn hóa param & row keys |
+| `backend/src/models/types.ts` | Thêm `recordsetIndex` vào `ReportMapping` |
+| `backend/src/config/database.ts` | Thêm migration tự động cho cột `recordsetIndex` |
+| `backend/src/routes/report.routes.ts` | Chuẩn hóa execute & export — backend là nguồn dữ liệu thật |
+| `backend/src/services/auth.service.ts` | Thêm `recordsetIndex` vào INSERT mapping |
+| `backend/src/services/excel.service.ts` | Refactor toàn diện: block tracker, resolveRecordset, fill* tách rõ |
 
 ---
 
@@ -337,6 +359,15 @@ netsh advfirewall firewall add rule name="HIS Reports" dir=in action=allow proto
 5. **Param mapping không điền được giá trị:** `@TuNgay` không khớp với params key `TuNgay` → Đã fix strip `@` prefix khi tìm giá trị.
 6. **Template formatting bị mất:** Font, màu, border bị reset khi ghi giá trị → Đã fix bằng snapshot/restore style trước và sau khi ghi.
 7. **Frontend build lỗi:** Thiếu `composite: true` trong tsconfig.node.json và thiếu `terser` → Đã fix.
+
+## Bug đã fix (2026-03-31) — Refactor toàn diện
+
+1. **Execute param không nhận đúng:** `@TuNgay`, `TuNgay`, `tungay` gửi từ frontend không map đúng vào report parameters → Đã fix bằng `normalizeQueryParams()` và `normalizeParamName()` trong execute route.
+2. **Export phụ thuộc dữ liệu client:** API export dùng `recordsets` từ frontend body thay vì gọi lại SP → Đã fix: backend luôn tự gọi `executeReport()` rồi dùng kết quả thật để export. Client gửi recordsets → log warning + ignore (backward compat).
+3. **Param mapping fallback nhầm sang data[0]:** `fillParam()` bị fallback sang `normalized[0]?.[fieldKey]` → Đã fix: `fillParam()` chỉ đọc từ `params`, `fillScalar()` chỉ đọc từ `data[0]`.
+4. **List mapping chèn dòng lặp riêng từng cột:** Mỗi cột gọi `spliceRows()` riêng → Đã fix: block tracker (`sheetName + recordsetIndex + startRow`) đảm bảo splice chỉ xảy ra một lần duy nhất cho cả block.
+5. **Mapping không ràng buộc đúng recordset:** Mặc định dùng recordset 0 hoặc suy luận theo thứ tự sheet → Đã fix: thêm `recordsetIndex` vào `ReportMapping`, `resolveRecordset()` lấy đúng recordset theo chỉ định.
+6. **Export crash khi template/rỗng:** Không có sheet nào → crash → Đã fix: tạo sheet mặc định "Report". Validate mapping: bỏ qua lỗi với log warning thay vì crash.
 
 ---
 

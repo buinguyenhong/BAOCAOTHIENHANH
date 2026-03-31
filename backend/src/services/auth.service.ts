@@ -284,8 +284,8 @@ export class ReportService {
     configExec('DELETE FROM ReportMappings WHERE reportId = $reportId', { reportId });
     for (const m of mappings) {
       configExec(
-        `INSERT INTO ReportMappings (id, reportId, fieldName, cellAddress, mappingType, displayOrder, sheetName)
-         VALUES ($id, $reportId, $fieldName, $cellAddress, $mappingType, $displayOrder, $sheetName)`,
+        `INSERT INTO ReportMappings (id, reportId, fieldName, cellAddress, mappingType, displayOrder, sheetName, recordsetIndex)
+         VALUES ($id, $reportId, $fieldName, $cellAddress, $mappingType, $displayOrder, $sheetName, $recordsetIndex)`,
         {
           id: uuidv4(),
           reportId,
@@ -294,6 +294,7 @@ export class ReportService {
           mappingType: m.mappingType || 'list',
           displayOrder: m.displayOrder || 0,
           sheetName: m.sheetName || null,
+          recordsetIndex: m.recordsetIndex ?? 0,
         }
       );
     }

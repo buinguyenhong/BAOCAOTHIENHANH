@@ -5,6 +5,11 @@ import { auditService } from '../services/audit.service.js';
 import { authMiddleware, adminMiddleware } from '../middleware/auth.middleware.js';
 import { AuthRequest } from '../middleware/auth.middleware.js';
 import { checkReportView, checkReportExport } from '../middleware/permission.middleware.js';
+import {
+  normalizeQueryParams,
+  normalizeParamName,
+  buildParamLookup,
+} from '../utils/normalize.js';
 
 const router = Router();
 
@@ -19,14 +24,11 @@ router.get(
   async (req: AuthRequest, res: Response) => {
     try {
       const reports = await reportService.getReportsForUser(req.user!.userId, req.user!.role);
-
-      // Không gửi templateData về client (quá lớn)
       const safeReports = reports.map(({ parameters, mappings, ...rest }) => ({
         ...rest,
         parameters: parameters || [],
         mappings: mappings || [],
       }));
-
       res.json({ success: true, data: safeReports });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
@@ -45,7 +47,6 @@ router.get(
       if (!report) {
         return res.status(404).json({ success: false, error: 'Không tìm thấy báo cáo' });
       }
-
       const { parameters, mappings, ...rest } = report;
       res.json({
         success: true,
@@ -58,29 +59,36 @@ router.get(
 );
 
 // GET /api/user/reports/:id/execute - Chạy báo cáo
+// Chuẩn hóa query params trước khi map theo report.parameters
 router.get(
   '/user/reports/:id/execute',
   authMiddleware,
   checkReportView(),
   async (req: AuthRequest, res: Response) => {
     try {
-      const report = await reportService.getReportById(((req.params as any).id as string));
+      const reportId = ((req.params as any).id as string);
+      const report = await reportService.getReportById(reportId);
       if (!report) {
         return res.status(404).json({ success: false, error: 'Không tìm thấy báo cáo' });
       }
 
-      // Build params từ query string
+      // Normalize toàn bộ query string: @TuNgay, TuNgay, tungay → TUNGAY
+      const normalizedQuery = normalizeQueryParams(req.query as Record<string, any>);
+
+      // Map params theo report.parameters (dùng normalizeParamName để match)
       const params: Record<string, any> = {};
       if (report.parameters) {
         for (const p of report.parameters) {
-          const value = req.query[p.paramName];
+          const key = normalizeParamName(p.paramName); // TUNGAY
+          const value = normalizedQuery[key];
           if (value !== undefined && value !== '') {
+            // Giữ nguyên tên gốc (giữ @ prefix nếu có) khi gửi xuống SP
             params[p.paramName] = value;
           }
         }
       }
 
-      const result = await reportService.executeReport(((req.params as any).id as string), params);
+      const result = await reportService.executeReport(reportId, params);
 
       await auditService.log(
         'RUN_REPORT',
@@ -98,28 +106,56 @@ router.get(
 );
 
 // POST /api/user/reports/:id/export - Export Excel
+// Backend là nguồn dữ liệu thật. Nếu client gửi recordsets → ignore + warning.
 router.post(
   '/user/reports/:id/export',
   authMiddleware,
   checkReportExport(),
   async (req: AuthRequest, res: Response) => {
     try {
-      const report = await reportService.getReportById(((req.params as any).id as string));
+      const reportId = ((req.params as any).id as string);
+      const report = await reportService.getReportById(reportId);
       if (!report) {
         return res.status(404).json({ success: false, error: 'Không tìm thấy báo cáo' });
       }
 
-      const { recordsets, params } = req.body as { recordsets: any[][]; params: Record<string, any> };
-      if (!recordsets || !Array.isArray(recordsets)) {
-        return res.status(400).json({ success: false, error: 'Dữ liệu không hợp lệ' });
+      // ⚠️ Nếu client gửi recordsets → log warning nhưng ignore (backward compat)
+      const { recordsets: clientRecordsets, params: clientParams } = req.body as {
+        recordsets?: any[][];
+        params?: Record<string, any>;
+      };
+      if (clientRecordsets) {
+        console.warn(
+          `[Export] reportId=${reportId} client sent recordsets payload — ignoring, re-executing SP`
+        );
       }
+
+      // Luôn normalize params từ client body (nếu có) hoặc dùng query
+      const rawParams: Record<string, any> = clientParams
+        ? buildParamLookup(clientParams)
+        : normalizeQueryParams(req.query as Record<string, any>);
+
+      // Map params theo report.parameters
+      const params: Record<string, any> = {};
+      if (report.parameters) {
+        for (const p of report.parameters) {
+          const key = normalizeParamName(p.paramName);
+          const value = rawParams[key];
+          if (value !== undefined && value !== '') {
+            params[p.paramName] = value;
+          }
+        }
+      }
+
+      // Backend tự gọi lại SP để lấy dữ liệu thật
+      const result = await reportService.executeReport(reportId, params);
 
       const fileName = `${report.name.replace(/[^a-zA-Z0-9\u00C0-\u024F ]/g, '')}_${new Date().toISOString().split('T')[0]}.xlsx`;
       const buffer = await excelService.exportReport(
         report.mappings || [],
         report.templateFile,
-        params || {},
-        recordsets,
+        params,
+        result.recordsets || [result.rows],
         fileName
       );
 
@@ -128,7 +164,7 @@ router.post(
         req.user!.userId,
         `${report.name} (${report.spName})`,
         req.ip ?? null,
-        `${(recordsets[0] || []).length} rows`
+        `${(result.rows || []).length} rows`
       );
 
       res.setHeader(
@@ -186,17 +222,13 @@ router.post(
         req.user!.userId
       );
 
-      // Lưu parameters
       if (parameters && Array.isArray(parameters)) {
         await reportService.setReportParameters(report.id, parameters);
       }
-
-      // Lưu mappings
       if (mappings && Array.isArray(mappings)) {
         await reportService.setReportMappings(report.id, mappings);
       }
 
-      // Lưu template file nếu có
       let templateSavedPath: string | undefined;
       if (templateFile && templateData) {
         const buffer = Buffer.from(templateData, 'base64');
@@ -216,7 +248,6 @@ router.post(
       res.json({ success: true, data: updated });
     } catch (err: any) {
       console.error('Create report error:', err);
-      console.error('Stack:', err.stack);
       res.status(500).json({ success: false, error: err.message || 'Lỗi không xác định' });
     }
   }
@@ -257,12 +288,9 @@ router.put(
         templateFile,
       });
 
-      // Cập nhật parameters
       if (parameters !== undefined) {
         await reportService.setReportParameters(((req.params as any).id as string), parameters);
       }
-
-      // Cập nhật mappings
       if (mappings !== undefined) {
         await reportService.setReportMappings(((req.params as any).id as string), mappings);
       }
@@ -384,12 +412,9 @@ router.put(
       }
 
       const reportId = (req.params as any).id as string;
-
-      // Decode base64 và lưu file
       const buffer = Buffer.from(fileData, 'base64');
       const savedPath = reportService.saveTemplate(reportId, buffer, fileName);
 
-      // Cập nhật templateFile trong DB
       await reportService.updateReport(reportId, {
         templateFile: savedPath,
       });

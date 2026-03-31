@@ -1,277 +1,330 @@
+/**
+ * Excel Service - Export Engine
+ *
+ * Key concepts:
+ * - Block: uniquely identified by (sheetName + recordsetIndex + startRow).
+ *   One block is splicedRows() exactly once. All list columns in the same block
+ *   share the same starting row and grow together.
+ * - recordsetIndex: explicit data source selector (default 0 = first recordset).
+ * - sheetName: only determines which worksheet to write to.
+ * - fillParam: only reads from params (never from recordset data).
+ * - fillScalar: only reads from data[0] (first row of recordset).
+ * - normalize rows to uppercase for case-insensitive field lookup.
+ */
 import ExcelJS from 'exceljs';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { ReportMapping } from '../models/types.js';
+import {
+  normalizeRow,
+  normalizeRows,
+  buildParamLookup,
+  getNormalizedParam,
+} from '../utils/normalize.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TEMPLATES_DIR = path.join(__dirname, '../../templates');
 
-/**
- * Export report to Excel with template support.
- *
- * Template logic:
- * - scalar mapping: fill a single cell with a scalar value
- * - list mapping:   fill rows starting from the cellAddress row,
- *                   copy formatting from that row (template row),
- *                   insert new rows if data is larger than template
- * - sheetName:      target specific worksheet (null = first sheet)
- * - recordsets:      each recordset is mapped to a sheet by index (0=first sheet, 1=second sheet...)
- *                   Mappings with matching sheetName fill that sheet;
- *                   scalar mappings fill all sheets;
- *                   list mappings without sheetName fill the first recordset
- */
+// ─────────────────────────────────────────────
+// Block Tracker
+// ─────────────────────────────────────────────
+
+interface BlockState {
+  /** Rows have been spliced for this block already */
+  spliced: boolean;
+  /** Next free row for each column letter */
+  colRow: Record<string, number>;
+}
+
+function makeBlockKey(
+  sheetName: string,
+  recordsetIndex: number,
+  startRow: number
+): string {
+  return `${sheetName}|${recordsetIndex}|${startRow}`;
+}
+
+// ─────────────────────────────────────────────
+// Cell helpers
+// ─────────────────────────────────────────────
+
+/** Parse "A4" → { col: "A", row: 4 } */
+function parseCellAddress(addr: string): { col: string; row: number } | null {
+  const m = addr.match(/^([a-zA-Z]+)(\d+)$/);
+  if (!m) return null;
+  return { col: m[1].toUpperCase(), row: parseInt(m[2], 10) };
+}
+
+/** Parse column letter(s) to index (1-based): A→1, B→2, AA→27 */
+function colLetterToIndex(col: string): number {
+  let idx = 0;
+  for (const ch of col.toUpperCase()) {
+    idx = idx * 26 + (ch.charCodeAt(0) - 64);
+  }
+  return idx;
+}
+
+/** Detect if a value should be stored as number instead of string. */
+function smartType(val: any): string | number {
+  const s = String(val).trim();
+  if (
+    s !== '' &&
+    !isNaN(Number(val)) &&
+    s.length < 15 &&
+    !s.startsWith('0') &&
+    !/^\d{6,}$/.test(s)
+  ) {
+    return Number(val);
+  }
+  return s;
+}
+
+/** Snapshot full style of a cell. */
+function snapshotStyle(cell: ExcelJS.Cell): Record<string, any> {
+  const snap = (obj: any) => (obj ? JSON.parse(JSON.stringify(obj)) : undefined);
+  return {
+    font: snap(cell.font),
+    border: snap(cell.border),
+    fill: snap(cell.fill),
+    alignment: snap(cell.alignment),
+    numFmt: cell.numFmt,
+    protection: snap(cell.protection),
+  };
+}
+
+/** Restore style snapshot onto a cell. */
+function restoreStyle(cell: ExcelJS.Cell, style: Record<string, any>): void {
+  if (style.font) cell.font = style.font as any;
+  if (style.border) cell.border = style.border as any;
+  if (style.fill) cell.fill = style.fill as any;
+  if (style.alignment) cell.alignment = style.alignment as any;
+  if (style.numFmt) cell.numFmt = style.numFmt;
+  if (style.protection) cell.protection = style.protection as any;
+}
+
+// ─────────────────────────────────────────────
+// Validation helpers
+// ─────────────────────────────────────────────
+
+function isValidMapping(m: ReportMapping): boolean {
+  if (!m.mappingType) {
+    console.warn(`[ExcelService] mapping ${m.id} missing mappingType — skipping`);
+    return false;
+  }
+  if (!m.fieldName) {
+    console.warn(`[ExcelService] mapping ${m.id} missing fieldName — skipping`);
+    return false;
+  }
+  if (m.mappingType !== 'param' && !m.cellAddress) {
+    console.warn(`[ExcelService] mapping ${m.id} (${m.mappingType}) missing cellAddress — skipping`);
+    return false;
+  }
+  return true;
+}
+
+// ─────────────────────────────────────────────
+// Recordset resolver
+// ─────────────────────────────────────────────
+
+function resolveRecordset(
+  recordsets: Record<string, any>[][],
+  recordsetIndex: number | null | undefined
+): Record<string, any>[] {
+  const idx = recordsetIndex ?? 0;
+  if (idx >= 0 && idx < recordsets.length) {
+    return recordsets[idx];
+  }
+  return recordsets[0] ?? [];
+}
+
+// ─────────────────────────────────────────────
+// Main service
+// ─────────────────────────────────────────────
+
 export class ExcelService {
   /**
-   * Per-export row tracker: sheetName → { columnLetter → currentFillRow }
-   * Ensures all list columns in the same sheet grow from the same starting row.
+   * Per-export block tracker.
+   * Key = "sheetName|recordsetIndex|startRow", Value = BlockState.
    */
-  private _sheetRowTracker: Record<string, Record<string, number>> = {};
+  private _blocks: Record<string, BlockState> = {};
 
-  /**
-   * Resolve template file path from the stored relative path.
-   * templateFile format: "{reportId}/{filename.xlsx}"
-   */
+  // ── Template resolution ──────────────────────────────────
+
   private resolveTemplatePath(templateFile: string | null): string | null {
     if (!templateFile) return null;
     const filePath = path.join(TEMPLATES_DIR, templateFile);
     return fs.existsSync(filePath) ? filePath : null;
   }
 
-  /**
-   * Normalize row keys to uppercase for case-insensitive matching.
-   */
-  private normalizeRows(rows: Record<string, any>[]): Record<string, any>[] {
-    return rows.map(row => {
-      const normalized: Record<string, any> = {};
-      for (const [k, v] of Object.entries(row)) {
-        normalized[k.toUpperCase()] = v;
-      }
-      return normalized;
-    });
-  }
+  // ── Worksheet helpers ─────────────────────────────────────
 
-  /**
-   * Get worksheet by name, fallback to first sheet.
-   */
-  private getSheet(workbook: ExcelJS.Workbook, name?: string): ExcelJS.Worksheet {
-    if (name && name.trim()) {
-      const ws = workbook.getWorksheet(name.trim());
+  private getSheet(workbook: ExcelJS.Workbook, sheetName?: string | null): ExcelJS.Worksheet {
+    if (sheetName && sheetName.trim()) {
+      const ws = workbook.getWorksheet(sheetName.trim());
       if (ws) return ws;
+    }
+    if (workbook.worksheets.length === 0) {
+      return workbook.addWorksheet('Report');
     }
     return workbook.worksheets[0];
   }
 
-  /**
-   * Copy full cell style from source to target.
-   * Includes all formatting: font, border, fill, alignment, number format,
-   * protection, and rich text.
-   */
-  private copyCellStyle(source: ExcelJS.Cell, target: ExcelJS.Cell): void {
-    // Deep clone font
-    if (source.font) {
-      target.font = {
-        name: source.font.name,
-        family: source.font.family,
-        size: source.font.size,
-        bold: source.font.bold,
-        italic: source.font.italic,
-        underline: source.font.underline,
-        color: source.font.color ? { argb: source.font.color.argb } : undefined,
-        strike: source.font.strike,
-        vertAlign: source.font.vertAlign,
-      };
-    }
-    // Deep clone border
-    if (source.border) {
-      target.border = JSON.parse(JSON.stringify(source.border));
-    }
-    // Deep clone fill
-    if (source.fill) {
-      target.fill = JSON.parse(JSON.stringify(source.fill));
-    }
-    // Deep clone alignment
-    if (source.alignment) {
-      target.alignment = JSON.parse(JSON.stringify(source.alignment));
-    }
-    // Number format
-    target.numFmt = source.numFmt || 'General';
-    // Protection
-    if (source.protection) {
-      target.protection = JSON.parse(JSON.stringify(source.protection));
-    }
-  }
+  // ── Style copy ───────────────────────────────────────────
 
-  /**
-   * Copy row height from source row to target row.
-   */
-  private copyRowHeight(source: ExcelJS.Row, target: ExcelJS.Row): void {
+  private copyRowStyle(source: ExcelJS.Row, target: ExcelJS.Row): void {
     if (source.height) target.height = source.height;
   }
 
-  /**
-   * Get a serializable snapshot of a cell's full style.
-   * Used to preserve template cell formatting when overwriting values.
-   */
-  private snapshotCellStyle(cell: ExcelJS.Cell): Record<string, any> {
-    return {
-      font: cell.font ? JSON.parse(JSON.stringify(cell.font)) : undefined,
-      border: cell.border ? JSON.parse(JSON.stringify(cell.border)) : undefined,
-      fill: cell.fill ? JSON.parse(JSON.stringify(cell.fill)) : undefined,
-      alignment: cell.alignment ? JSON.parse(JSON.stringify(cell.alignment)) : undefined,
-      numFmt: cell.numFmt,
-      protection: cell.protection ? JSON.parse(JSON.stringify(cell.protection)) : undefined,
-    };
+  private copyCellStyle(source: ExcelJS.Cell, target: ExcelJS.Cell): void {
+    const snap = (obj: any) => (obj ? JSON.parse(JSON.stringify(obj)) : undefined);
+    if (source.font) target.font = snap(source.font);
+    if (source.border) target.border = snap(source.border);
+    if (source.fill) target.fill = snap(source.fill);
+    if (source.alignment) target.alignment = snap(source.alignment);
+    target.numFmt = source.numFmt || 'General';
+    if (source.protection) target.protection = snap(source.protection);
   }
 
-  /**
-   * Restore a cell style from a snapshot previously captured by snapshotCellStyle.
-   */
-  private restoreCellStyle(cell: ExcelJS.Cell, style: Record<string, any>): void {
-    if (style.font) cell.font = style.font as any;
-    if (style.border) cell.border = style.border as any;
-    if (style.fill) cell.fill = style.fill as any;
-    if (style.alignment) cell.alignment = style.alignment as any;
-    if (style.numFmt) cell.numFmt = style.numFmt;
-    if (style.protection) cell.protection = style.protection as any;
-  }
+  // ── fillParam: single value from params only ────────────
 
-  /**
-   * Fill scalar mapping: write a single value into a specific cell.
-   * Value comes from params (param values) or data[0] (scalar column data).
-   */
-  private fillScalar(
+  private fillParam(
     ws: ExcelJS.Worksheet,
     mapping: ReportMapping,
-    data: Record<string, any>[],
     params: Record<string, any>
   ): void {
     const { fieldName, cellAddress } = mapping;
     if (!cellAddress) return;
 
-    const normalized = this.normalizeRows(data);
-    const fieldKey = fieldName.toUpperCase();
+    const value = getNormalizedParam(params, fieldName);
+    if (value == null) return;
 
-    // Strip @ prefix for param mappings so @TuNgay matches params['TuNgay']
-    const paramKey = fieldName.startsWith('@') ? fieldName.slice(1) : fieldName;
-    const paramKeyUpper = paramKey.toUpperCase();
-
-    // Value priority: params[fieldName] or params[paramKey] > data[0][fieldKey]
-    const rawValue =
-      params[fieldName] !== undefined
-        ? params[fieldName]
-        : params[paramKey] !== undefined
-          ? params[paramKey]
-          : params[paramKeyUpper] !== undefined
-            ? params[paramKeyUpper]
-            : normalized[0]?.[fieldKey];
-
-    if (rawValue == null) return;
-
-    // Smart type detection
-    const strVal = String(rawValue).trim();
-    let cellValue: string | number = strVal;
-    if (
-      !isNaN(Number(rawValue)) &&
-      strVal !== '' &&
-      strVal.length < 15 &&
-      !strVal.startsWith('0') &&
-      !/^\d{6,}$/.test(strVal)
-    ) {
-      cellValue = Number(rawValue);
-    }
-
-    // Preserve template cell formatting (style snapshot + restore)
     const targetCell = ws.getCell(cellAddress);
-    const savedStyle = this.snapshotCellStyle(targetCell);
-    targetCell.value = cellValue;
-    this.restoreCellStyle(targetCell, savedStyle);
+    const saved = snapshotStyle(targetCell);
+    targetCell.value = smartType(value);
+    restoreStyle(targetCell, saved);
   }
 
-  /**
-   * Fill list mapping: write data rows into worksheet.
-   * - Starts at the row specified in cellAddress (template row)
-   * - Copies formatting from the template row to all inserted rows
-   * - Inserts new rows if data.length > 1
-   * @param rowTracker  - Tracks the current fill row per column, so list columns
-   *                      don't overwrite each other; shared across columns in same sheet.
-   */
-  private fillList(
+  // ── fillScalar: single value from data[0] only ───────────
+
+  private fillScalar(
     ws: ExcelJS.Worksheet,
     mapping: ReportMapping,
-    data: Record<string, any>[],
-    rowTracker: Record<string, number>
+    data: Record<string, any>[]
   ): void {
     const { fieldName, cellAddress } = mapping;
     if (!cellAddress || data.length === 0) return;
 
-    const normalized = this.normalizeRows(data);
-    const fieldKey = fieldName.toUpperCase();
+    const normalized = normalizeRows(data);
+    const value = normalized[0]?.[fieldName.toUpperCase()];
+    if (value == null) return;
 
-    // Parse column letter and row number from cellAddress, e.g. "A4" → colLetter="A", templateRowNum=4
-    const colMatch = cellAddress.match(/[a-zA-Z]+/);
-    const rowMatch = cellAddress.match(/[0-9]+/);
-    if (!colMatch) return;
-    const colLetter = colMatch[0];
-
-    // Use tracked row so all list columns start at the same row and grow together
-    const templateRowNum = rowTracker[colLetter] ?? (rowMatch ? parseInt(rowMatch[0]) : 4);
-    const templateRow = ws.getRow(templateRowNum);
-    const templateCell = ws.getCell(`${colLetter}${templateRowNum}`);
-
-    // Insert new rows BEFORE any cell writes (shared across all columns)
-    const rowsNeeded = data.length;
-    if (rowsNeeded > 1) {
-      ws.spliceRows(templateRowNum + 1, 0, ...Array(rowsNeeded - 1).fill(null));
-    }
-
-    // Fill each data row
-    for (let idx = 0; idx < data.length; idx++) {
-      const currentRowNum = templateRowNum + idx;
-      const rowData = normalized[idx];
-      const targetCell = ws.getCell(`${colLetter}${currentRowNum}`);
-      const val = rowData?.[fieldKey] ?? '';
-
-      // Smart type detection
-      const strVal = String(val).trim();
-      let cellValue: string | number = val;
-      if (
-        !isNaN(Number(val)) &&
-        strVal !== '' &&
-        strVal.length < 15 &&
-        !strVal.startsWith('0') &&
-        !/^\d{6,}$/.test(strVal)
-      ) {
-        cellValue = Number(val);
-      }
-
-      if (idx === 0) {
-        // First row: snapshot existing template style, set value, restore style
-        const savedStyle = this.snapshotCellStyle(targetCell);
-        targetCell.value = cellValue;
-        this.restoreCellStyle(targetCell, savedStyle);
-      } else {
-        // New rows: set value then copy style from template cell
-        targetCell.value = cellValue;
-        this.copyCellStyle(templateCell, targetCell);
-        const currentRow = ws.getRow(currentRowNum);
-        this.copyRowHeight(templateRow, currentRow);
-      }
-    }
-
-    // Advance tracker for this column (tracks how many rows were filled)
-    rowTracker[colLetter] = templateRowNum + data.length;
+    const targetCell = ws.getCell(cellAddress);
+    const saved = snapshotStyle(targetCell);
+    targetCell.value = smartType(value);
+    restoreStyle(targetCell, saved);
   }
 
-  /**
-   * Export report to Excel buffer.
-   *
-   * @param mappings        - ReportMapping[] defining how to fill cells
-   * @param templateFile    - Relative path stored in DB, e.g. "{reportId}/template.xlsx"
-   * @param params          - Scalar values from report parameters (for scalar mappings)
-   * @param recordsets      - Array of result sets; each index maps to a sheet
-   * @param outputFileName  - Name of the output file (for reference only)
-   */
+  // ── fillList: data rows with block-level splice ─────────
+
+  private fillList(
+    ws: ExcelJS.Worksheet,
+    mapping: ReportMapping,
+    data: Record<string, any>[],
+    blockStates: Record<string, BlockState>,
+    sheetName: string
+  ): void {
+    const { fieldName, cellAddress, recordsetIndex } = mapping;
+    if (!cellAddress || data.length === 0) return;
+
+    const parsed = parseCellAddress(cellAddress);
+    if (!parsed) return;
+
+    const { col, row: startRow } = parsed;
+    const rsIdx = recordsetIndex ?? 0;
+
+    // ── Block key
+    const blockKey = makeBlockKey(sheetName, rsIdx, startRow);
+
+    // ── Init block state if new
+    if (!blockStates[blockKey]) {
+      blockStates[blockKey] = { spliced: false, colRow: {} };
+    }
+    const block = blockStates[blockKey];
+
+    // ── Track row for this column
+    if (block.colRow[col] === undefined) {
+      block.colRow[col] = startRow;
+    }
+
+    // ── Splice rows only on first column that hits this block
+    const thisColRow = block.colRow[col];
+    const rowsNeeded = data.length;
+
+    if (!block.spliced && rowsNeeded > 1) {
+      // Insert (rowsNeeded - 1) blank rows after startRow
+      ws.spliceRows(thisColRow + 1, 0, ...Array(rowsNeeded - 1).fill(null));
+      block.spliced = true;
+    }
+
+    // ── Template cell for style cloning
+    const templateCell = ws.getCell(`${col}${thisColRow}`);
+    const templateRow = ws.getRow(thisColRow);
+
+    // ── Normalize rows for case-insensitive field lookup
+    const normalized = normalizeRows(data);
+    const fieldKey = fieldName.toUpperCase();
+
+    // ── Write each row
+    for (let i = 0; i < data.length; i++) {
+      const currentRowNum = thisColRow + i;
+      const val = normalized[i]?.[fieldKey] ?? '';
+      const targetCell = ws.getCell(`${col}${currentRowNum}`);
+
+      if (i === 0) {
+        // First row: preserve template style
+        const saved = snapshotStyle(targetCell);
+        targetCell.value = smartType(val);
+        restoreStyle(targetCell, saved);
+      } else {
+        // New rows: write value then clone style from template
+        targetCell.value = smartType(val);
+        this.copyCellStyle(templateCell, targetCell);
+        this.copyRowStyle(templateRow, ws.getRow(currentRowNum));
+      }
+    }
+
+    // ── Advance tracker for this column
+    block.colRow[col] = thisColRow + data.length;
+  }
+
+  // ── Fill a worksheet from a recordset (no-template fallback) ──
+
+  private fillSheetFromRecordset(
+    ws: ExcelJS.Worksheet,
+    rows: Record<string, any>[]
+  ): void {
+    if (rows.length === 0) return;
+    const columns = Object.keys(rows[0]);
+
+    // Header row
+    columns.forEach((col, ci) => {
+      const cell = ws.getCell(1, ci + 1);
+      cell.value = col;
+      cell.font = { bold: true };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } };
+    });
+
+    // Data rows
+    rows.forEach((row, ri) => {
+      columns.forEach((col, ci) => {
+        ws.getCell(ri + 2, ci + 1).value = row[col] ?? '';
+      });
+    });
+  }
+
+  // ── Public export ────────────────────────────────────────
+
   async exportReport(
     mappings: ReportMapping[],
     templateFile: string | null,
@@ -279,145 +332,89 @@ export class ExcelService {
     recordsets: Record<string, any>[][],
     _outputFileName: string
   ): Promise<Buffer> {
+    // Reset per-export state
+    this._blocks = {};
+
     const workbook = new ExcelJS.Workbook();
 
-    // Reset row tracker for this export
-    this._sheetRowTracker = {};
-
-    // 1. Load template if exists
+    // ── 1. Load template
     const templatePath = this.resolveTemplatePath(templateFile);
     if (templatePath) {
       const buffer = fs.readFileSync(templatePath);
+      // Load directly from buffer (pass ArrayBuffer so ExcelJS accepts it)
       await workbook.xlsx.load(buffer.buffer as ArrayBuffer);
     } else {
-      // No template: create one sheet per recordset
+      // No template: create one sheet per non-empty recordset
       for (let i = 0; i < recordsets.length; i++) {
         const rs = recordsets[i];
-        if (rs.length === 0) continue;
-        const sheetName = i === 0 ? 'Báo cáo' : `Sheet${i + 1}`;
-        const ws = workbook.addWorksheet(sheetName);
+        if (!rs || rs.length === 0) continue;
+        const name = i === 0 ? 'Báo cáo' : `Sheet${i + 1}`;
+        const ws = workbook.addWorksheet(name);
         this.fillSheetFromRecordset(ws, rs);
       }
+      // Ensure at least one sheet
+      if (workbook.worksheets.length === 0) {
+        workbook.addWorksheet('Report');
+      }
     }
 
-    // 2. Get the list of sheet names from the workbook for assignment
-    const workbookSheets = workbook.worksheets.map(ws => ws.name);
-
-    // 3. Build lookup: sheetName → sheet index (for sheet-aware mappings)
+    // ── 2. Build sheet-name → index map
     const sheetNameToIdx = new Map<string, number>();
-    workbookSheets.forEach((name, idx) => sheetNameToIdx.set(name, idx));
+    workbook.worksheets.forEach((ws, i) => sheetNameToIdx.set(ws.name, i));
 
-    // 4. Determine active recordset per workbook sheet
-    // Each workbook sheet i uses recordsets[i] (or first recordset if out of bounds)
-    const sheetRecordsetMap: Record<number, Record<string, any>[]> = {};
-    for (let i = 0; i < workbookSheets.length; i++) {
-      sheetRecordsetMap[i] = recordsets[i] || recordsets[0] || [];
-    }
-
-    // 5. Group mappings
+    // ── 3. Group mappings by type
+    const paramMappings = mappings.filter(m => m.mappingType === 'param');
     const scalarMappings = mappings.filter(m => m.mappingType === 'scalar');
     const listMappings = mappings.filter(m => m.mappingType === 'list');
-    const paramMappings = mappings.filter(m => m.mappingType === 'param');
 
-    // 6. Fill scalar mappings — only on the sheet specified (or first sheet if none)
-    for (const mapping of scalarMappings) {
-      let targetSheetName: string;
-      let dataRecordset: Record<string, any>[];
-
-      if (mapping.sheetName && mapping.sheetName.trim()) {
-        targetSheetName = mapping.sheetName.trim();
-        const sheetIdx = sheetNameToIdx.get(targetSheetName) ?? 0;
-        dataRecordset = recordsets[sheetIdx] || recordsets[0] || [];
-      } else {
-        targetSheetName = workbookSheets[0];
-        dataRecordset = recordsets[0] || [];
-      }
-
-      const ws = workbook.getWorksheet(targetSheetName);
-      if (ws) {
-        this.fillScalar(ws, mapping, dataRecordset, params);
-      }
-    }
-
-    // 7. Fill param mappings — same logic as scalar (single value, no row insertion)
+    // ── 4. Fill param mappings (params only, no recordset data)
     for (const mapping of paramMappings) {
-      let targetSheetName: string;
-      let dataRecordset: Record<string, any>[];
-
-      if (mapping.sheetName && mapping.sheetName.trim()) {
-        targetSheetName = mapping.sheetName.trim();
-        const sheetIdx = sheetNameToIdx.get(targetSheetName) ?? 0;
-        dataRecordset = recordsets[sheetIdx] || recordsets[0] || [];
-      } else {
-        targetSheetName = workbookSheets[0];
-        dataRecordset = recordsets[0] || [];
-      }
-
-      const ws = workbook.getWorksheet(targetSheetName);
-      if (ws) {
-        this.fillScalar(ws, mapping, dataRecordset, params);
-      }
+      if (!isValidMapping(mapping)) continue;
+      const ws = this.getSheet(workbook, mapping.sheetName);
+      this.fillParam(ws, mapping, params);
     }
 
-    // 8. Fill list mappings — one rowTracker per sheet
-    // Sort by starting row so template row always processed first
+    // ── 5. Fill scalar mappings (recordset[0] only)
+    for (const mapping of scalarMappings) {
+      if (!isValidMapping(mapping)) continue;
+      const ws = this.getSheet(workbook, mapping.sheetName);
+      const rsIdx = mapping.recordsetIndex ?? 0;
+      const data = resolveRecordset(recordsets, rsIdx);
+      this.fillScalar(ws, mapping, data);
+    }
+
+    // ── 6. Fill list mappings (with block-level splice coordination)
+    // Sort by starting row ascending — ensures template row is processed first
     const sortedList = [...listMappings].sort((a, b) => {
-      const aRow = parseInt((a.cellAddress?.match(/[0-9]+/)?.[0]) || '0');
-      const bRow = parseInt((b.cellAddress?.match(/[0-9]+/)?.[0]) || '0');
+      const aRow = parseInt((a.cellAddress?.match(/\d+/)?.[0]) || '0');
+      const bRow = parseInt((b.cellAddress?.match(/\d+/)?.[0]) || '0');
       return aRow - bRow;
     });
 
     for (const mapping of sortedList) {
-      let targetSheetName: string;
-      let dataRecordset: Record<string, any>[];
+      if (!isValidMapping(mapping)) continue;
 
-      if (mapping.sheetName && mapping.sheetName.trim()) {
-        targetSheetName = mapping.sheetName.trim();
-        const sheetIdx = sheetNameToIdx.get(targetSheetName) ?? 0;
-        dataRecordset = recordsets[sheetIdx] || recordsets[0] || [];
-      } else {
-        targetSheetName = workbookSheets[0];
-        dataRecordset = recordsets[0] || [];
+      const ws = this.getSheet(workbook, mapping.sheetName);
+      const targetSheetName = ws.name;
+      const rsIdx = mapping.recordsetIndex ?? 0;
+      const data = resolveRecordset(recordsets, rsIdx);
+
+      // Per-sheet block state (keyed by blockKey)
+      const blockKey = makeBlockKey(
+        targetSheetName,
+        rsIdx,
+        parseInt((mapping.cellAddress?.match(/\d+/)?.[0]) || '0')
+      );
+      if (!this._blocks[blockKey]) {
+        this._blocks[blockKey] = { spliced: false, colRow: {} };
       }
 
-      const ws = workbook.getWorksheet(targetSheetName);
-      if (!ws) continue;
-
-      // Use per-sheet row tracker so all columns in same sheet grow together
-      if (!this._sheetRowTracker[targetSheetName]) {
-        this._sheetRowTracker[targetSheetName] = {};
-      }
-
-      this.fillList(ws, mapping, dataRecordset, this._sheetRowTracker[targetSheetName]);
+      this.fillList(ws, mapping, data, this._blocks, targetSheetName);
     }
 
-    // 8. Return as buffer
+    // ── 7. Serialize to buffer
     const buf = await workbook.xlsx.writeBuffer();
-    return Buffer.from(buf) as unknown as Buffer;
-  }
-
-  /**
-   * Fill a worksheet from a recordset (used for no-template export).
-   * Writes all columns as headers in row 1, data in rows 2+.
-   */
-  private fillSheetFromRecordset(ws: ExcelJS.Worksheet, rows: Record<string, any>[]): void {
-    if (rows.length === 0) return;
-    const columns = Object.keys(rows[0]);
-
-    // Write header row
-    columns.forEach((col, colIdx) => {
-      const cell = ws.getCell(1, colIdx + 1);
-      cell.value = col;
-      cell.font = { bold: true };
-      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } };
-    });
-
-    // Write data rows
-    rows.forEach((row, rowIdx) => {
-      columns.forEach((col, colIdx) => {
-        ws.getCell(rowIdx + 2, colIdx + 1).value = row[col] ?? '';
-      });
-    });
+    return Buffer.from(buf);
   }
 }
 
