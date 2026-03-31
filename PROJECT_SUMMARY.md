@@ -16,7 +16,8 @@ Xây dựng hệ thống báo cáo nội bộ LAN cho bệnh viện, cho phép:
 - Multi-recordsets: SP trả về nhiều result sets → hiển thị dropdown chọn, xuất Excel mỗi recordset ra sheet riêng
 - Multi-result-set mappings: giữ mappings riêng cho từng result set
 - 3 loại mapping: **Giá trị đơn (scalar)**, **Danh sách (list)**, **Tham số (param)**
-- Phân quyền user xem báo cáo cụ thể
+- Phân quyền user xem báo cáo theo nhóm báo cáo (report group)
+- Phân quyền hành động quản trị: thêm/sửa/xóa báo cáo, thêm/sửa/xóa nhóm báo cáo
 - Export Excel chính xác theo template + mapping (multi-sheet, multi-recordset)
 - Upload file template Excel mẫu (multi-sheet)
 - JWT Authentication
@@ -117,8 +118,11 @@ BAOCAOTHIENHANH/
 | `Users` | Tài khoản người dùng (id, username, password hash, role) |
 | `Reports` | Cấu hình báo cáo (name, spName, group, templateFile) |
 | `ReportParameters` | Tham số của báo cáo (paramName, paramType, defaultValue) |
-| `ReportMappings` | Mapping cột → ô Excel (cellAddress, scalar/list/param, sheetName) |
+| `ReportMappings` | Mapping cột → ô Excel (cellAddress, scalar/list/param, sheetName, recordsetIndex) |
 | `ReportPermissions` | Quyền user × report (canView, canExport) |
+| `UserPermissions` | Quyền hành động: canCreate/Edit/DeleteReport, canCreate/Edit/DeleteGroup |
+| `ReportGroups` | Nhóm báo cáo (id, name, icon, displayOrder) |
+| `UserReportGroupPermissions` | Gán nhóm báo cáo cho user (userId, reportGroupId) |
 | `AuditLogs` | Log hành động (LOGIN, RUN_REPORT, EXPORT...) |
 
 ### Schema chi tiết:
@@ -129,17 +133,47 @@ CREATE TABLE ReportMappings (
   reportId        TEXT NOT NULL,
   fieldName       TEXT NOT NULL,
   cellAddress     TEXT,
-  mappingType     TEXT DEFAULT 'list',   -- 'scalar' | 'list' | 'param'
+  mappingType     TEXT DEFAULT 'list',
   displayOrder    INTEGER DEFAULT 0,
-  sheetName       TEXT,                   -- sheet đích, null = first sheet
-  recordsetIndex  INTEGER DEFAULT 0,      -- chỉ định recordset nguồn (0 = first)
+  sheetName       TEXT,
+  recordsetIndex  INTEGER DEFAULT 0,
   FOREIGN KEY (reportId) REFERENCES Reports(id) ON DELETE CASCADE
+);
+
+CREATE TABLE ReportGroups (
+  id            TEXT PRIMARY KEY,
+  name          TEXT NOT NULL,
+  icon          TEXT DEFAULT '📂',
+  displayOrder  INTEGER DEFAULT 0,
+  createdAt     TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE UserPermissions (
+  id               TEXT PRIMARY KEY,
+  userId           TEXT NOT NULL UNIQUE,
+  canCreateReport  INTEGER DEFAULT 0,
+  canEditReport    INTEGER DEFAULT 0,
+  canDeleteReport  INTEGER DEFAULT 0,
+  canCreateGroup   INTEGER DEFAULT 0,
+  canEditGroup     INTEGER DEFAULT 0,
+  canDeleteGroup   INTEGER DEFAULT 0,
+  FOREIGN KEY (userId) REFERENCES Users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE UserReportGroupPermissions (
+  id             TEXT PRIMARY KEY,
+  userId         TEXT NOT NULL,
+  reportGroupId  TEXT NOT NULL,
+  FOREIGN KEY (userId) REFERENCES Users(id) ON DELETE CASCADE,
+  FOREIGN KEY (reportGroupId) REFERENCES ReportGroups(id) ON DELETE CASCADE,
+  UNIQUE(userId, reportGroupId)
 );
 ```
 
 ### Migration tự động:
-- Tự động thêm cột `sheetName` nếu chưa có khi khởi động
-- Tự động thêm cột `recordsetIndex` nếu chưa có khi khởi động
+- Tự động thêm cột `sheetName`, `recordsetIndex`, `reportGroupId` nếu chưa có
+- Tự động tạo bảng `ReportGroups`, `UserPermissions`, `UserReportGroupPermissions` nếu chưa có
+- Seed: nhóm "Tổng hợp" mặc định, admin được gán full quyền + thấy tất cả nhóm
 
 ---
 
@@ -147,8 +181,8 @@ CREATE TABLE ReportMappings (
 
 | Username | Password | Vai trò |
 |----------|----------|---------|
-| `admin` | `Admin@123` | Quản trị viên (toàn quyền) |
-| `user` | `User@123` | Người dùng (chỉ xem báo cáo được gán) |
+| `admin` | `Admin@123` | Quản trị viên (toàn quyền + full action permissions) |
+| `user` | `User@123` | Người dùng (không có action permissions, cần gán nhóm báo cáo) |
 
 ---
 
@@ -222,17 +256,31 @@ Ghi lại: LOGIN, LOGOUT, RUN_REPORT, EXPORT_REPORT, CREATE/UPDATE/DELETE_REPORT
 - `POST /api/auth/change-password`
 
 ### User (theo quyền)
-- `GET /api/user/reports` — Danh sách báo cáo được phép xem
+- `GET /api/user/reports` — Danh sách báo cáo được phép xem (lọc theo nhóm báo cáo được gán)
 - `GET /api/user/reports/:id` — Chi tiết báo cáo
 - `GET /api/user/reports/:id/execute` — Chạy báo cáo, trả về `{ columns, rows, recordsets }`. Hỗ trợ param có hoặc không có `@` prefix.
 - `POST /api/user/reports/:id/export` — Xuất Excel. **Backend là nguồn dữ liệu thật** — tự gọi lại `executeReport(reportId, params)`. Nếu client gửi `recordsets` trong body → log warning rồi ignore (backward compat).
 
-### Admin
+### Admin — Users
+- `GET /api/users` — Danh sách user kèm `UserWithPermissions` (user + action perms + reportGroupIds)
+- `POST /api/users` — Tạo user + lưu action permissions + gán nhóm báo cáo
+- `PUT /api/users/:id` — Cập nhật user + action permissions + nhóm báo cáo (full replace)
+- `GET /api/users/:id` — Chi tiết user kèm permissions
+- `DELETE /api/users/:id` — Xóa user
+
+### Admin — Report Groups
+- `GET /api/report-groups` — Danh sách nhóm báo cáo
+- `POST /api/report-groups` — Tạo nhóm (cần `canCreateGroup`)
+- `PUT /api/report-groups/:id` — Sửa nhóm (cần `canEditGroup`)
+- `DELETE /api/report-groups/:id` — Xóa nhóm (cần `canDeleteGroup`)
+
+### Admin — Reports
 - `GET/POST/PUT/DELETE /api/reports`
-- `GET /api/reports/:id/template/sheets` — Lấy danh sách sheet từ template file (mới)
+- `GET /api/reports/:id/template/sheets` — Lấy danh sách sheet từ template file
 - `PUT /api/reports/:id/parameters`
 - `PUT /api/reports/:id/mappings` — Lưu mappings kèm sheetName
 - `PUT /api/reports/:id/template` — Upload template file
+- **Lưu ý:** POST/PUT/DELETE báo cáo yêu cầu action permissions tương ứng
 
 ### System
 - `GET /api/system/stored-procedures`
@@ -368,6 +416,44 @@ netsh advfirewall firewall add rule name="HIS Reports" dir=in action=allow proto
 4. **List mapping chèn dòng lặp riêng từng cột:** Mỗi cột gọi `spliceRows()` riêng → Đã fix: block tracker (`sheetName + recordsetIndex + startRow`) đảm bảo splice chỉ xảy ra một lần duy nhất cho cả block.
 5. **Mapping không ràng buộc đúng recordset:** Mặc định dùng recordset 0 hoặc suy luận theo thứ tự sheet → Đã fix: thêm `recordsetIndex` vào `ReportMapping`, `resolveRecordset()` lấy đúng recordset theo chỉ định.
 6. **Export crash khi template/rỗng:** Không có sheet nào → crash → Đã fix: tạo sheet mặc định "Report". Validate mapping: bỏ qua lỗi với log warning thay vì crash.
+
+## Tính năng mới (2026-03-31) — Phân quyền User & Nhóm Báo cáo
+
+**Mục tiêu:**
+- Phân quyền hành động: user có thể thêm/sửa/xóa báo cáo hoặc nhóm dựa trên action permissions
+- Phân quyền xem theo nhóm: user đăng nhập chỉ thấy báo cáo trong nhóm được cấp quyền
+
+**Backend:**
+- 3 bảng mới: `ReportGroups`, `UserPermissions`, `UserReportGroupPermissions`
+- API CRUD đầy đủ cho user + report group
+- `checkActionPermission()` kiểm tra quyền hành động ở tầng backend (ràng buộc thật, không phụ thuộc frontend)
+- `getReportsForUser()` lọc theo `UserReportGroupPermissions` cho non-admin
+- Migration tự động + seed: admin có full perms + thấy tất cả nhóm
+
+**Frontend:**
+- `UserManagement.tsx`: form 3 phần — thông tin tài khoản / quyền hành động / nhóm báo cáo được xem
+- `PermissionManager.tsx`: matrix checkbox user × nhóm báo cáo
+- `AuthContext`: lưu `actionPerms`, helper `refreshActionPerms`
+- `Sidebar`: hiển thị action perm badges cho non-admin
+- Validate: username bắt buộc, password bắt buộc khi tạo mới, confirm khớp
+
+## Các file thay đổi (2026-03-31) — Phân quyền User & Nhóm Báo cáo
+
+| File | Thay đổi |
+|------|----------|
+| `backend/src/models/types.ts` | Thêm `UserPermission`, `ReportGroup`, `UserReportGroupPermission`, `UserWithPermissions`, `UserActionPermissions`, DTOs |
+| `backend/src/config/database.ts` | Migration schema mới, seed admin + nhóm mặc định |
+| `backend/src/services/auth.service.ts` | Mở rộng: CRUD user permissions, report groups, `getUserActionPermissions()`, `createUserFull()`, `updateUserFull()` |
+| `backend/src/routes/user.routes.ts` | CRUD user + report group; `checkActionPermission()` trên routes |
+| `backend/src/routes/report.routes.ts` | Action permission checks trên POST/PUT/DELETE báo cáo |
+| `frontend/src/types/index.ts` | Thêm `UserPermission`, `SetUserPermissionsDto`, `ReportGroup`, `UserReportGroupPermission`, `UserWithPermissions`, `ReportGroupView` |
+| `frontend/src/api/user.api.ts` | CRUD user + report group APIs |
+| `frontend/src/pages/UserManagement.tsx` | Form 3 phần, CRUD nhóm, quyền hành động |
+| `frontend/src/pages/PermissionManager.tsx` | Matrix checkbox user × nhóm báo cáo |
+| `frontend/src/contexts/AuthContext.tsx` | Thêm `actionPerms`, `refreshActionPerms` |
+| `frontend/src/components/Sidebar.tsx` | Dùng `ReportGroupView`, hiển thị action perm badges |
+| `frontend/src/hooks/useReports.ts` | Dùng `ReportGroupView` |
+| `frontend/src/pages/ReportDesigner.tsx` | Dùng `ReportGroupView` |
 
 ---
 
