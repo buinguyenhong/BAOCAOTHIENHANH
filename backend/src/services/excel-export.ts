@@ -346,10 +346,16 @@ export class ExcelExportService {
   private resolveSheet(wb: ExcelJS.Workbook, sheetName?: string | null): ExcelJS.Worksheet {
     if (sheetName?.trim()) {
       const ws = wb.getWorksheet(sheetName.trim());
-      if (ws) return ws;
+      if (ws) {
+        console.log(`[Excel] resolveSheet('${sheetName}') → found '${ws.name}'`);
+        return ws;
+      }
+      console.log(`[Excel] resolveSheet('${sheetName}') → NOT FOUND, fallback to first sheet`);
     }
     if (wb.worksheets.length === 0) return wb.addWorksheet('Report');
-    return wb.worksheets[0];
+    const fallback = wb.worksheets[0];
+    console.log(`[Excel] resolveSheet('${sheetName ?? '(null)'}') → fallback to '${fallback.name}'`);
+    return fallback;
   }
 
   // ── Layer 1: Build field type map from metadata ──
@@ -440,10 +446,14 @@ export class ExcelExportService {
     if (!mapping.cellAddress) return;
     const rsIdx = mapping.recordsetIndex ?? 0;
     const data = getRecordsetData(recordsets, rsIdx);
-    if (data.length === 0) return;
+    if (data.length === 0) {
+      console.log('[Excel] fillScalar ' + mapping.fieldName + '@' + mapping.cellAddress + ' -> SKIP (data empty, rsIdx=' + rsIdx + ')');
+      return;
+    }
 
     const normalizedField = (mapping.fieldName ?? '').toUpperCase();
     const raw = data[0]?.[normalizedField];
+    console.log('[Excel] fillScalar ' + mapping.fieldName + '@' + mapping.cellAddress + ' -> raw=' + JSON.stringify(raw) + ' (rowKeys=' + Object.keys(data[0]).join(',') + ')');
     const valueType = this.resolveValueType(mapping, fieldTypeMap);
     const resolution = convertForExport(raw, valueType, mapping.formatPattern ?? null);
     writeCell(ws.getCell(mapping.cellAddress), resolution, null);
@@ -464,7 +474,10 @@ export class ExcelExportService {
     if (!mapping.cellAddress) return;
     const rsIdx = mapping.recordsetIndex ?? 0;
     const data = getRecordsetData(recordsets, rsIdx);
-    if (data.length === 0) return;
+    if (data.length === 0) {
+      console.log('[Excel] fillList ' + mapping.fieldName + '@' + mapping.cellAddress + ' -> SKIP (data empty, rsIdx=' + rsIdx + ')');
+      return;
+    }
 
     const parsed = parseCell(mapping.cellAddress);
     if (!parsed) return;
@@ -560,6 +573,8 @@ export class ExcelExportService {
       const b64 = fs.readFileSync(tmplPath, 'base64');
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await (wb.xlsx.load as (d: any, o?: any) => Promise<unknown>)(b64, { base64: true });
+      console.log(`[Excel] template loaded: ${tmplPath}`);
+      console.log(`[Excel] sheets in template: [${wb.worksheets.map(ws => ws.name).join(', ')}]`);
     } else {
       // No template: tạo sheet per recordset
       for (let i = 0; i < recordsets.length; i++) {
@@ -573,6 +588,10 @@ export class ExcelExportService {
 
     // ── Group mappings by kind
     const validMappings = mappings.filter(isValidMapping);
+    console.log('[Excel] templateFile=' + (templateFile ?? 'null') + ' tmplPath=' + (tmplPath ?? 'null'));
+    const mappingDebug = validMappings.map(m => m.fieldName + '@' + (m.sheetName ?? '') + '[rs' + (m.recordsetIndex ?? 0) + ']').join(' | ');
+    console.log('[Excel] mappings: ' + mappingDebug);
+    console.log('[Excel] recordsets: ' + recordsets.map((rs, i) => 'RS' + i + '=' + rs.length + 'rows').join(', '));
     const paramMappings  = validMappings.filter(m => m.mappingType === 'param');
     const scalarMappings = validMappings.filter(m => m.mappingType === 'scalar');
     const listMappings   = validMappings.filter(m => m.mappingType === 'list');

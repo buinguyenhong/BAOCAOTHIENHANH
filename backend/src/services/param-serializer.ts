@@ -17,6 +17,7 @@
  */
 
 import { ReportParameter, ParamOption } from '../models/types.js';
+import { normalizeParamName } from '../utils/normalize.js';
 
 // ─────────────────────────────────────────────
 // Date helpers
@@ -245,21 +246,20 @@ export function serializeReportParams(
 ): Record<string, string> {
   const result: Record<string, string> = {};
 
+  // Build normalized lookup map từ rawParams MỘT LẦN:
+  // mọi biến thể @TuNgay / TuNgay / tungay / TUNGAY → key chuẩn TUNGAY
+  const normalizedLookup: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(rawParams)) {
+    normalizedLookup[normalizeParamName(k)] = v;
+  }
+
   for (const param of reportParams) {
-    // Lấy giá trị từ rawParams — hỗ trợ @paramName và paramName
-    let rawValue: unknown = rawParams[param.paramName];
-    if (rawValue === undefined) {
-      // Thử không có @
-      const noAt = param.paramName.replace(/^@/, '');
-      rawValue = rawParams[noAt];
-    }
-    if (rawValue === undefined) {
-      // Thử UPPERCASE
-      rawValue = rawParams[param.paramName.toUpperCase()];
-    }
+    // Lấy value bằng key chuẩn hóa của param
+    const paramKey = normalizeParamName(param.paramName);
+    const rawValue = normalizedLookup[paramKey];
 
     const serialized = serializeParamValue(param, rawValue ?? '');
-    // Chỉ thêm vào result nếu có giá trị, hoặc param là required
+    // Chỉ thêm vào result nếu có giá trị
     if (serialized !== '') {
       result[param.paramName] = serialized;
     }

@@ -90,7 +90,11 @@ router.get(
         normalizedQuery
       );
 
+      console.log(`[Execute] reportId=${reportId} SP=${report.spName} params=${JSON.stringify(params)}`);
+
       const result = await reportService.executeReport(reportId, params);
+
+      console.log(`[Execute] result: ${result.recordsets?.length ?? 0} recordsets, rows[0]=${result.recordsets?.[0]?.length ?? 0}, rows[1]=${result.recordsets?.[1]?.length ?? 0}`);
 
       await auditService.log(
         'RUN_REPORT',
@@ -120,21 +124,13 @@ router.post(
         return res.status(404).json({ success: false, error: 'Không tìm thấy báo cáo' });
       }
 
-      // ⚠️ Nếu client gửi recordsets → log warning nhưng ignore (backward compat)
-      const { recordsets: clientRecordsets, params: clientParams } = req.body as {
-        recordsets?: any[][];
-        params?: Record<string, unknown>;
-      };
-      if (clientRecordsets) {
-        console.warn(
-          `[Export] reportId=${reportId} client sent recordsets payload — ignoring, re-executing SP`
-        );
-      }
-
       // Serialize params từ client body theo cấu hình báo cáo
-      const rawParams: Record<string, unknown> = clientParams
-        ? clientParams
-        : normalizeQueryParams(req.query as Record<string, any>);
+      const { params: clientParams, recordsets: clientRecordsets } = req.body as {
+        params?: Record<string, unknown>;
+        recordsets?: any[][];
+      };
+
+      const rawParams: Record<string, unknown> = clientParams ?? normalizeQueryParams(req.query as Record<string, any>);
 
       // Serialize params theo cấu hình báo cáo (paramType + valueMode)
       const params: Record<string, string> = serializeReportParams(
@@ -142,8 +138,28 @@ router.post(
         rawParams
       );
 
-      // Backend tự gọi lại SP để lấy dữ liệu thật
-      const result = await reportService.executeReport(reportId, params);
+      console.log(`[Export] reportId=${reportId} SP=${report.spName} params=${JSON.stringify(params)} mappings_count=${report.mappings?.length}`);
+
+      // ── Dùng lại recordsets từ frontend thay vì gọi lại SP ──
+      let result;
+      if (clientRecordsets && clientRecordsets.length > 0) {
+        // Client đã execute rồi → dùng lại kết quả, KHÔNG gọi SP lần 2
+        console.log(`[Export] Using recordsets from client: ${clientRecordsets.map((rs, i) => 'RS' + i + '=' + rs.length + 'rows').join(', ')}`);
+        // Recreate minimal QueryResult cho export service
+        const main = clientRecordsets[0] ?? [];
+        result = {
+          columns: main.length > 0 ? Object.keys(main[0]) : [],
+          rows: main,
+          recordsets: clientRecordsets,
+          recordsetMetadata: undefined,
+        };
+      } else {
+        // Fallback: client không gửi recordsets → gọi SP (backward compat)
+        console.log(`[Export] No client recordsets — re-executing SP`);
+        result = await reportService.executeReport(reportId, params);
+      }
+
+      console.log(`[Export] recordsets for export: ${result.recordsets?.length ?? 0}, rows[0]=${result.recordsets?.[0]?.length ?? 0}, rows[1]=${result.recordsets?.[1]?.length ?? 0}`);
 
       const fileName = `${report.name.replace(/[^a-zA-Z0-9\u00C0-\u024F ]/g, '')}_${new Date().toISOString().split('T')[0]}.xlsx`;
       const buffer = await excelExportService.exportReport(
