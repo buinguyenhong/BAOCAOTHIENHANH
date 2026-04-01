@@ -1,30 +1,34 @@
-# HIS Reports - Hệ thống Quản lý Báo cáo Bệnh viện
+# BAOCAOTHIENHANH — Hệ thống Báo cáo Bệnh viện
 
-Hệ thống báo cáo nội bộ dành cho mạng LAN của bệnh viện. Cho phép thiết kế, chạy và xuất báo cáo từ SQL Server (Stored Procedures) với phân quyền người dùng chi tiết.
+Hệ thống báo cáo nội bộ chạy trên mạng LAN bệnh viện. Cho phép admin thiết kế báo cáo từ SQL Server Stored Procedures, cấu hình mapping chi tiết, và user chạy/export Excel với kết quả **deterministic** — đúng dữ liệu, đúng format, không đoán kiểu.
 
 ---
 
 ## 🏗️ Kiến trúc
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│              Browser (LAN - http://localhost:5173)            │
-│                 React 19 + Vite + Tailwind CSS             │
-└───────────────────────────┬──────────────────────────────────┘
-                            │ REST API
-┌───────────────────────────▼──────────────────────────────────┐
-│              Backend: Express.js (port 5000)                   │
-│  Auth │ Reports │ Users │ System │ Excel Export               │
-└───────────┬──────────────────────┬───────────────────────────┘
-            │                      │
-    ┌───────▼────────┐    ┌───────▼────────────┐
-    │   ConfigDB     │    │   HospitalDB       │
-    │  HISReports    │    │  (Cơ sở dữ liệu   │
-    │  - Users       │    │   HIS bệnh viện)   │
-    │  - Reports     │    │                    │
-    │  - Permissions │    │  (Chỉ gọi SP)      │
-    │  - AuditLogs   │    │                    │
-    └────────────────┘    └────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│              Browser (LAN — http://localhost:5173)              │
+│                  React 19 + Vite + Tailwind CSS                 │
+└────────────────────────────┬────────────────────────────────────┘
+                             │ REST API
+┌────────────────────────────▼────────────────────────────────────┐
+│                  Backend: Express.js (port 5000)                  │
+│   Auth │ Reports │ Users │ System │ Excel Export (deterministic) │
+└───────────┬────────────────────────────────────┬────────────────┘
+            │                                    │
+    ┌───────▼────────┐               ┌────────────▼────────────┐
+    │   ConfigDB     │               │       HospitalDB         │
+    │  hisreports   │               │  (Cơ sở dữ liệu HIS    │
+    │  (SQLite)     │               │   bệnh viện — MSSQL)    │
+    │               │               │                          │
+    │  • Users      │               │   (Chỉ gọi Stored       │
+    │  • Reports    │               │    Procedures)           │
+    │  • Parameters │               │                          │
+    │  • Mappings   │               │                          │
+    │  • Permissions│               │                          │
+    │  • AuditLogs  │               │                          │
+    └───────────────┘               └───────────────────────────┘
 ```
 
 ---
@@ -33,13 +37,16 @@ Hệ thống báo cáo nội bộ dành cho mạng LAN của bệnh viện. Cho 
 
 | Tính năng | Mô tả |
 |-----------|--------|
-| **JWT Authentication** | Đăng nhập bằng username/password, token 8h |
-| **Dynamic SP Parameters** | Tự detect parameters từ `sys.dm_exec_describe_first_result_set` |
-| **Template Excel Export** | Xuất file .xlsx giữ nguyên template + copy formatting |
-| **Phân quyền User × Report** | Ma trận quyền: xem + xuất Excel cho từng báo cáo |
-| **Audit Logging** | Ghi log mọi hành động: login, chạy báo cáo, xuất file... |
-| **Admin Panel** | CRUD báo cáo, quản lý users, phân quyền, cấu hình |
-| **Modern UI** | React + Tailwind CSS, responsive, Toast notifications |
+| **Deterministic Export** | Export Excel hoàn toàn dựa trên `mapping.valueType` — không đoán kiểu từ dữ liệu runtime |
+| **Config-Driven Parameters** | Admin cấu hình đầy đủ: text, number, date, datetime, select, multiselect, textarea; single/csv/json serialization |
+| **Config-Driven Mapping** | Admin cấu hình rõ: `mappingType` (param/scalar/list), `recordsetIndex`, `valueType` (text/number/date/datetime), `formatPattern` |
+| **Auto-detect SP Metadata** | Detect tham số, cột, kiểu từ `sys.dm_exec_describe_first_result_set` — chỉ dùng để gợi ý |
+| **Multi-Recordset** | SP trả nhiều recordsets → mapping chỉ rõ recordset nào cho sheet nào |
+| **Template Excel** | Upload template .xlsx, giữ nguyên layout, style, border, row height |
+| **First-Class List Block** | Block = (sheetName + recordsetIndex + startRow), `spliceRows` 1 lần, row alignment đảm bảo |
+| **Backward Compatibility** | Mapping cũ không có `valueType` → fallback `'text'` an toàn; auto-migration cột mới |
+| **JWT + Phân quyền 3 lớp** | Action permissions (tạo/sửa/xóa) → Group view permissions → Report permissions (xem/xuất) |
+| **Audit Logging** | Ghi log: login, chạy báo cáo, xuất file, CRUD |
 
 ---
 
@@ -47,363 +54,312 @@ Hệ thống báo cáo nội bộ dành cho mạng LAN của bệnh viện. Cho 
 
 ```
 hospital-report-server/
-├── backend/                    # Express.js API
-│   ├── src/
-│   │   ├── index.ts           # Entry point (port 5000)
-│   │   ├── config/            # Database connections
-│   │   ├── routes/            # API routes
-│   │   ├── controllers/       # Request handlers
-│   │   ├── services/          # Business logic
-│   │   ├── middleware/        # Auth, permission
-│   │   ├── models/            # TypeScript types
-│   │   └── utils/             # JWT, password helpers
-│   ├── templates/             # Excel template files
-│   └── .env                   # Configuration
+├── backend/
+│   └── src/
+│       ├── index.ts                   # Entry point (port 5000)
+│       ├── config/
+│       │   └── database.ts            # SQLite ConfigDB + MSSQL HospitalDB
+│       ├── models/
+│       │   ├── types.ts               # ReportParameter, ReportMapping đầy đủ
+│       │   └── excel.types.ts         # MappingValueType, CellValueResolution, ListBlockContext
+│       ├── routes/
+│       │   ├── auth.routes.ts         # /api/auth/*
+│       │   ├── report.routes.ts        # /api/user/reports/* + /api/reports/*
+│       │   ├── user.routes.ts          # /api/users/*
+│       │   └── system.routes.ts        # /api/system/*
+│       ├── services/
+│       │   ├── auth.service.ts        # Auth + ReportService (CRUD)
+│       │   ├── hospital.service.ts    # SP execution + type detection (cho preview)
+│       │   ├── excel-export.ts         # ⭐ Deterministic export engine
+│       │   ├── excel.service.ts       # Legacy (giữ lại)
+│       │   ├── param-serializer.ts    # ⭐ Param serialization pipeline
+│       │   ├── date.service.ts         # Pure date/serial utilities
+│       │   └── audit.service.ts        # Audit logging
+│       ├── middleware/
+│       │   ├── auth.middleware.ts      # JWT verification
+│       │   └── permission.middleware.ts # Report-level guards
+│       └── utils/
+│           ├── jwt.ts                  # JWT helpers
+│           ├── password.ts             # bcrypt helpers
+│           └── normalize.ts            # Param/row name normalization
 │
-├── frontend/                   # React + Vite
-│   ├── src/
-│   │   ├── pages/             # Page components
-│   │   ├── components/        # UI components
-│   │   ├── contexts/          # Auth, Toast contexts
-│   │   ├── hooks/             # Custom hooks
-│   │   ├── api/               # Axios API client
-│   │   └── types/             # TypeScript types
-│   └── vite.config.ts         # Proxy to backend
+├── frontend/
+│   └── src/
+│       ├── pages/
+│       │   ├── Login.tsx               # Login page
+│       │   ├── Dashboard.tsx           # User: chạy + export báo cáo
+│       │   ├── ReportDesigner.tsx      # Admin: thiết kế báo cáo đầy đủ
+│       │   ├── UserManagement.tsx      # Admin: CRUD users + groups
+│       │   ├── PermissionManager.tsx    # Admin: ma trận phân quyền
+│       │   └── SystemConfig.tsx        # Admin: cấu hình HospitalDB
+│       ├── components/
+│       │   ├── Sidebar.tsx             # Sidebar + report group tree
+│       │   ├── Header.tsx              # Topbar
+│       │   ├── DataTable.tsx            # Multi-recordset table
+│       │   ├── ParameterForm.tsx        # Dynamic param form
+│       │   └── ui/                     # Button, Input, Select, Modal, Card
+│       ├── contexts/
+│       │   ├── AuthContext.tsx          # Auth state
+│       │   └── ToastContext.tsx         # Toast notifications
+│       ├── hooks/
+│       │   └── useReports.ts           # Report fetch/execute/export hook
+│       ├── api/
+│       │   ├── client.ts               # Axios instance + interceptors
+│       │   ├── auth.api.ts             # Login/logout
+│       │   ├── report.api.ts           # User + Admin + System API
+│       │   └── user.api.ts            # User/group management
+│       └── types/
+│           └── index.ts                # Frontend TypeScript interfaces
 │
-├── scripts/
-│   └── init_configdb.sql     # Database init script
-│
+├── templates/                          # Uploaded Excel templates (theo reportId)
+├── data/
+│   └── hisreports.db                  # SQLite ConfigDB
+├── config/
+│   └── hospital_db.json               # HospitalDB connection config
 └── README.md
 ```
 
 ---
 
-## 🚀 Cài đặt & Chạy
+## 🔑 Nguyên tắc kiến trúc
 
-### Bước 1: Cài đặt SQL Server - Chạy Init Script
+### A. Deterministic Export — KHÔNG đoán kiểu khi export
 
-1. Mở **SQL Server Management Studio (SSMS)**
-2. Kết nối SQL Server instance của bạn
-3. Mở file `scripts/init_configdb.sql`
-4. Execute toàn bộ script
+```
+Data flow export tuyệt đối:
 
-Script sẽ tạo:
-- Database `HISReports`
-- 5 bảng: `Users`, `Reports`, `ReportParameters`, `ReportMappings`, `ReportPermissions`, `AuditLogs`
-- 2 users mặc định: `admin/Admin@123` và `user/User@123`
-
-### Bước 2: Cấu hình Backend
-
-```bash
-cd hospital-report-server/backend
+SP execute → raw recordsets (Date objects → Excel serial)
+                        ↓
+             mapping.valueType ← NGUỒN SỰ THẬT DUY NHẤT
+                        ↓
+             convertForExport(raw, valueType, formatPattern)
+                        ↓
+             CellValueResolution { excelValue, formatKind, numFmt }
+                        ↓
+             writeCell() → Excel cell
 ```
 
-Chỉnh sửa file `.env`:
+**Đã loại bỏ hoàn toàn:**
+- Heuristic detect date/datetime từ sample values cho export
+- `dateColumns` global theo field name
+- `smartType` đoán kiểu khi fill cell
+- `fillParam/fillScalar/fillList` tự quyết type
 
-```env
-PORT=5000
-HOST=0.0.0.0
-JWT_SECRET=your-super-secret-key-change-in-production
-JWT_EXPIRES_IN=8h
+**Cho phép (phục vụ preview/test-run):**
+- Type detection trong `hospital.service.ts` — dùng để hiển thị preview
+- Metadata kiểu trong `recordsetMetadata[]` — dùng để render table trước
 
-# ConfigDB (HISReports - chạy init script ở trên)
-CONFIGDB_SERVER=localhost
-CONFIGDB_DATABASE=HISReports
-CONFIGDB_USER=sa
-CONFIGDB_PASSWORD=YourPassword
+### B. Mapping là nguồn sự thật cho export
 
-# HospitalDB (Cơ sở dữ liệu HIS bệnh viện)
-# Cấu hình này sẽ được ghi qua UI sau khi chạy app
-HOSPITALDB_SERVER=localhost
-HOSPITALDB_DATABASE=HospitalDB
-HOSPITALDB_USER=sa
-HOSPITALDB_PASSWORD=YourPassword
+```typescript
+// ReportMapping.valueType quyết định tuyệt đối:
+mapping.valueType = 'number'  → BenhAn_Id=5 → cell=5 (không bao giờ thành date)
+mapping.valueType = 'datetime'→ NgayVaoVien → serial + 'dd/MM/yyyy HH:mm:ss'
+mapping.valueType = 'text'    → luôn ghi string
+mapping.valueType = 'date'   → serial + 'dd/MM/yyyy'
 ```
 
-### Bước 3: Cài đặt Dependencies
+### C. Param config quyết định UI và serialization
 
-```bash
-# Backend
-cd backend
-npm install
-
-# Frontend
-cd ../frontend
-npm install
+```typescript
+// ReportParameter quyết định:
+paramType = 'multiselect' + valueMode = 'csv'  → User chọn nhiều → "1,2,3"
+paramType = 'multiselect' + valueMode = 'json' → User chọn nhiều → '["a","b"]'
+paramType = 'date'        → serialize → 'YYYY-MM-DD'
+paramType = 'datetime'    → serialize → 'YYYY-MM-DD HH:mm:ss'
 ```
 
-### Bước 4: Build Frontend cho Production
+### D. List Block là first-class concept
 
-```bash
-cd frontend
-npm run build
 ```
-
-### Bước 5: Chạy Backend (serve cả API + Frontend)
-
-```bash
-cd backend
-npm run dev
-```
-
-Backend chạy tại: `http://localhost:5000`
-Frontend (sau build): `http://localhost:5000` (cùng port)
-
-**Hoặc chạy riêng** (development):
-```bash
-# Terminal 1 - Backend
-cd backend && npm run dev
-
-# Terminal 2 - Frontend
-cd frontend && npm run dev
-# Truy cập: http://localhost:5173
+Block key = sheetName | recordsetIndex | startRow
+  • rowCount = DÙNG CHUNG cho mọi cột trong block
+  • spliceRows = gọi ĐÚNG 1 LẦN cho mỗi block
+  • Data mismatch → log warning, giữ alignment theo block.rowCount
 ```
 
 ---
 
-## 🌍 Triển khai trên mạng LAN (192.168.1.150)
+## 🗄️ Schema
 
-### Mô hình
+### ReportParameters
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  Máy Server: BAOCAOPC (192.168.1.150)                  │
-│  ├── Backend: http://0.0.0.0:5000                        │
-│  └── Frontend: http://0.0.0.0:5000 (static files)       │
-└──────────────────────┬──────────────────────────────────┘
-                       │ LAN (192.168.1.x)
-         ┌─────────────▼─────────────┐
-         │  Máy trạm (Doctor/Admin) │
-         │  http://192.168.1.150:5000 │
-         └────────────────────────────┘
-```
+| Cột | Kiểu | Mô tả |
+|-----|------|--------|
+| `id` | TEXT PK | UUID |
+| `reportId` | TEXT FK | Báo cáo cha |
+| `paramName` | TEXT | Tên tham số gốc SP (giữ `@`) |
+| `paramLabel` | TEXT | Label hiển thị |
+| `sqlType` | TEXT | Kiểu SQL từ SP metadata |
+| `maxLength` | INTEGER | Độ dài max |
+| `precision` | INTEGER | Precision |
+| `scale` | INTEGER | Scale |
+| `isNullable` | INTEGER | 0/1 |
+| `hasDefaultValue` | INTEGER | 0/1 |
+| `paramType` | TEXT | `text` \| `number` \| `date` \| `datetime` \| `select` \| `multiselect` \| `textarea` |
+| `valueMode` | TEXT | `single` \| `csv` \| `json` |
+| `optionsSourceType` | TEXT | `none` \| `static` \| `sql` |
+| `options` | TEXT | JSON array `{value, label}` |
+| `optionsQuery` | TEXT | SQL query lấy options |
+| `placeholder` | TEXT | Placeholder input |
+| `defaultValue` | TEXT | Giá trị mặc định |
+| `isRequired` | INTEGER | 0/1 |
+| `displayOrder` | INTEGER | Thứ tự |
 
-### 1. Đặt IP tĩnh cho máy Server
+### ReportMappings
 
-```
-Windows Settings → Network & Internet → Ethernet → Properties
-→ IPv4: 192.168.1.150 / Subnet: 255.255.255.0 / Gateway: 192.168.1.1
-```
-
-### 2. Bật SQL Server TCP/IP
-
-```
-SQL Server Configuration Manager
-→ SQL Server Network Configuration → Protocols for MSSQLSERVER
-→ TCP/IP → Enabled → Properties → IP Addresses
-→ TCP Port: 1433, IP All: 1433
-→ Restart SQL Server Service
-```
-
-### 3. Tắt Windows Firewall (hoặc mở port)
-
-```powershell
-# Tắt Firewall (đơn giản nhất cho mạng LAN nội bộ)
-netsh advfirewall set allprofiles state off
-
-# Hoặc mở port cụ thể:
-netsh advfirewall firewall add rule name="HIS Reports API" dir=in action=allow protocol=tcp localport=5000
-netsh advfirewall firewall add rule name="HIS SQL Server" dir=in action=allow protocol=tcp localport=1433
-```
-
-### 4. Cấu hình HOST trong .env
-
-```env
-HOST=0.0.0.0
-PORT=5000
-```
-
-### 5. Truy cập từ máy khác
-
-```
-# Theo IP
-http://192.168.1.150:5000
-
-# Theo tên máy (nếu DNS cho phép)
-http://BAOCAOPC:5000
-```
-
----
-
-## 🌐 Gán Domain Alias (baocaothienhanh.cntt)
-
-### Cách 1: Sửa file hosts trên từng máy (ĐƠN GIẢN NHẤT)
-
-Mở file `C:\Windows\System32\drivers\etc\hosts` bằng Notepad (Run as Administrator):
-
-```ini
-# Thêm vào cuối file:
-192.168.1.150   baocaothienhanh.cntt
-192.168.1.150   baocaothienhanh
-```
-
-Sau đó truy cập: `http://baocaothienhanh.cntt:5000`
-
-### Cách 2: Cấu hình DNS Server (NÂNG CAO)
-
-Nếu bệnh viện có **DNS Server** (ví dụ: Windows Server AD):
-
-```
-DNS Manager → Forward Lookup Zones → cntt
-→ New Host (A or AAAA)
-  Name: baocaothienhanh
-  IP Address: 192.168.1.150
-```
-
-Tất cả máy join domain sẽ tự resolve.
-
-### Cách 3: DNS trong router (nếu có)
-
-```
-Router DNS Settings → Static DNS Records
-Domain: baocaothienhanh.cntt → IP: 192.168.1.150
-```
-
-### ⚠️ Lưu ý về Port
-
-Nếu muốn bỏ port (dùng port 80 mặc định HTTP):
-
-```env
-PORT=80
-```
-
-Hoặc dùng IIS Reverse Proxy:
-```
-URL Rewrite + ARR (Application Request Routing)
-→ Forward requests to http://localhost:5000
-```
-
----
-
-## 👤 Đăng nhập
-
-| Username | Password | Vai trò |
-|---------|----------|---------|
-| `admin` | `Admin@123` | Quản trị viên (toàn quyền) |
-| `user` | `User@123` | Người dùng (chỉ xem báo cáo được gán) |
-
----
-
-## 📋 Hướng dẫn sử dụng
-
-### 1. Admin: Cấu hình kết nối HospitalDB
-
-1. Đăng nhập với tài khoản `admin`
-2. Vào **Cấu hình hệ thống** (sidebar)
-3. Nhập Server, Database, User, Password của SQL Server chứa dữ liệu HIS
-4. Nhấn **Lưu & Kiểm tra kết nối**
-
-### 2. Admin: Tạo báo cáo mới
-
-1. Vào **Thiết kế báo cáo**
-2. Nhấn **Tạo báo cáo mới**
-3. Điền thông tin: Tên, Nhóm, chọn **Stored Procedure**
-4. Tab **Tham số**: Tự động load từ SP, có thể chỉnh sửa label/type/default
-5. Tab **Mapping**: Map cột dữ liệu → ô Excel (scalar/list)
-6. Nhấn **Tạo báo cáo**
-
-### 3. Admin: Phân quyền
-
-1. Vào **Phân quyền**
-2. Bảng ma trận: hàng = người dùng, cột = báo cáo
-3. Check ✓ Xem / ✓ Xuất Excel cho từng user
-4. Nhấn **Lưu phân quyền**
-
-### 4. User: Chạy báo cáo
-
-1. Chọn báo cáo từ sidebar
-2. Nhập tham số (ngày tháng, mã khoa...)
-3. Nhấn **Chạy báo cáo** → xem dữ liệu trên bảng
-4. Nhấn **Xuất Excel** → tải file .xlsx
+| Cột | Kiểu | Mô tả |
+|-----|------|--------|
+| `id` | TEXT PK | UUID |
+| `reportId` | TEXT FK | Báo cáo cha |
+| `fieldName` | TEXT | Tên field |
+| `cellAddress` | TEXT | Ô Excel (VD: `A10`) |
+| `mappingType` | TEXT | `param` \| `scalar` \| `list` |
+| `displayOrder` | INTEGER | Thứ tự |
+| `sheetName` | TEXT | Tên sheet |
+| `recordsetIndex` | INTEGER | Chỉ định recordset (0=đầu tiên) |
+| `valueType` | TEXT | `text` \| `number` \| `date` \| `datetime` ⭐ |
+| `formatPattern` | TEXT | Override numFmt ⭐ |
 
 ---
 
 ## 🔌 API Reference
 
-### Authentication
+### User Routes
 | Method | Endpoint | Mô tả |
 |--------|----------|--------|
-| POST | `/api/auth/login` | Đăng nhập → JWT token |
-| POST | `/api/auth/logout` | Đăng xuất |
-| GET | `/api/auth/me` | Thông tin user hiện tại |
-| POST | `/api/auth/change-password` | Đổi mật khẩu |
-
-### User Routes (theo quyền)
-| Method | Endpoint | Mô tả |
-|--------|----------|--------|
-| GET | `/api/user/reports` | Danh sách báo cáo được phép |
+| GET | `/api/user/reports` | Danh sách báo cáo được phép xem |
+| GET | `/api/user/reports/:id` | Chi tiết báo cáo |
 | GET | `/api/user/reports/:id/execute` | Chạy báo cáo |
-| POST | `/api/user/reports/:id/export` | Export Excel |
+| POST | `/api/user/reports/:id/export` | Export Excel (deterministic) |
 
 ### Admin Routes
 | Method | Endpoint | Mô tả |
 |--------|----------|--------|
 | GET | `/api/reports` | Tất cả báo cáo |
 | POST | `/api/reports` | Tạo báo cáo |
+| GET | `/api/reports/:id` | Chi tiết báo cáo |
 | PUT | `/api/reports/:id` | Cập nhật báo cáo |
 | DELETE | `/api/reports/:id` | Xóa báo cáo |
-| GET | `/api/users` | Danh sách users |
-| POST | `/api/users` | Tạo user |
-| PUT | `/api/users/:id/permissions` | Gán quyền |
+| PUT | `/api/reports/:id/parameters` | Cập nhật parameters |
+| PUT | `/api/reports/:id/mappings` | Cập nhật mappings |
+| GET | `/api/reports/:id/template/sheets` | Danh sách sheet template |
+| PUT | `/api/reports/:id/template` | Upload template |
+
+### System Routes
+| Method | Endpoint | Mô tả |
+|--------|----------|--------|
 | GET | `/api/system/stored-procedures` | Danh sách SP |
-| GET | `/api/system/sp-metadata/:spName` | Metadata SP |
+| GET | `/api/system/sp-metadata/:spName` | Metadata SP (params + columns) |
+| POST | `/api/system/sp-metadata/test-run` | Execute SP thử |
+| GET | `/api/system/connection-status` | Kiểm tra kết nối |
+| POST | `/api/system/setup-connection` | Cấu hình HospitalDB |
+
+### Auth Routes
+| Method | Endpoint | Mô tả |
+|--------|----------|--------|
+| POST | `/api/auth/login` | Đăng nhập → JWT |
+| POST | `/api/auth/logout` | Đăng xuất |
+| GET | `/api/auth/me` | Thông tin user |
+| POST | `/api/auth/change-password` | Đổi mật khẩu |
 
 ---
 
-## 📦 Công nghệ
+## 🚀 Cài đặt & Chạy
 
-### Backend
-- **Runtime:** Node.js 18+
-- **Framework:** Express.js 4
-- **Database:** mssql (SQL Server)
-- **Auth:** JWT + bcryptjs
-- **Excel:** exceljs
-- **Language:** TypeScript (tsx for dev)
+```bash
+# Backend
+cd backend
+npm install
+npm run dev      # port 5000
 
-### Frontend
-- **Framework:** React 19
-- **Build:** Vite 6
-- **Styling:** Tailwind CSS 3
-- **HTTP:** Axios
-- **Router:** React Router DOM 7
-- **Language:** TypeScript
+# Frontend (development)
+cd ../frontend
+npm install
+npm run dev      # port 5173, proxy → :5000
+```
+
+**Mặc định admin:** `admin / Admin@123`
+
+---
+
+## 📋 Hướng dẫn sử dụng (Admin)
+
+### 1. Cấu hình HospitalDB
+**Cấu hình hệ thống** → Nhập server, database, user, password → Lưu.
+
+### 2. Tạo báo cáo
+**Thiết kế báo cáo** → Tạo báo cáo mới:
+
+**Tab Thông tin:** Tên, nhóm, chọn SP.
+
+**Tab Tham số:** (tự động detect từ SP)
+- `paramType` → loại UI nhập liệu
+- `valueMode` → single / csv / json (cho multiselect)
+- `optionsSourceType` → none / static / sql
+- `defaultValue`, `placeholder`, `isRequired`
+
+**Tab Mapping:** (chạy thử để thấy recordsets)
+- `mappingType` → param (tham số) / scalar (1 ô) / list (nhiều dòng)
+- `recordsetIndex` → chỉ rõ recordset nào
+- `valueType` → **quyết định cách export** (text/number/date/datetime)
+- `formatPattern` → override format (VD: `yyyy-MM-dd`)
+- `cellAddress` → ô Excel
+
+**Tab Template:** Upload file .xlsx làm template.
+
+### 3. Phân quyền
+**Phân quyền** → Gán quyền xem/xuất cho từng user.
+
+---
+
+## 📋 Hướng dẫn sử dụng (User)
+
+1. Chọn báo cáo từ sidebar
+2. Nhập tham số (date picker, select, multiselect…)
+3. Nhấn **Chạy báo cáo** → xem kết quả
+4. Nhấn **Xuất Excel** → file .xlsx đúng format
 
 ---
 
 ## 🔒 Bảo mật
 
-- Password được hash bằng **bcryptjs** (10 rounds)
-- JWT token có thời hạn **8 giờ**
-- Permission middleware kiểm tra quyền trước mọi thao tác
-- Audit log ghi lại mọi hành động
-- Khuyến nghị: dùng HTTPS trong môi trường production
+- Password hash **bcryptjs** (10 rounds)
+- JWT token **8 giờ**
+- Phân quyền 3 lớp: action → group → report
+- Audit log ghi mọi hành động
+- HospitalDB chỉ gọi Stored Procedures (không raw SQL)
 
 ---
 
 ## 🛠️ Khắc phục lỗi thường gặp
 
-### Lỗi kết nối SQL Server
-```
-Đảm bảo:
-- SQL Server đang chạy
-- TCP/IP protocol enabled (SQL Server Configuration Manager)
-- Firewall cho phép port 1433
-- Authentication mode: SQL Server Authentication
-```
+| Lỗi | Nguyên nhân | Xử lý |
+|-----|------------|--------|
+| Kết nối SQL Server thất bại | TCP/IP chưa bật | Bật TCP/IP trong SQL Server Configuration Manager |
+| Export ra số thành date | Mapping thiếu `valueType` | Thêm `valueType='number'` cho cột ID/số |
+| Multiselect không gửi đúng | `valueMode` chưa đúng | Đặt `valueMode='csv'` hoặc `'json'` |
+| Nhiều cột list bị lệch hàng | Có 2 mapping trỏ cùng 1 cột | Kiểm tra mỗi cột chỉ có 1 mapping |
 
-### Lỗi CORS
-```
-Kiểm tra backend đang chạy đúng port 5000
-Kiểm tra Vite proxy trong vite.config.ts
-```
+---
 
-### Lỗi Excel Export
-```
-Đảm bảo cột dữ liệu SQL khớp với mapping fieldName (case-insensitive)
-```
+## 📦 Công nghệ
+
+| Lớp | Công nghệ |
+|-----|-----------|
+| Backend Runtime | Node.js 18+, TypeScript, tsx |
+| Backend Framework | Express.js 4 |
+| ConfigDB | SQLite 3 (better-sqlite3) |
+| HospitalDB | MSSQL (tedious driver) |
+| Auth | JWT + bcryptjs |
+| Excel | ExcelJS |
+| Frontend Framework | React 19 + Vite 6 |
+| Styling | Tailwind CSS 3 |
+| HTTP Client | Axios |
+| Router | React Router DOM 7 |
 
 ---
 
 ## 📝 License
 
-Nội bộ bệnh viện - Không sử dụng cho mục đích thương mại.
+Nội bộ bệnh viện — Không sử dụng cho mục đích thương mại.

@@ -12,7 +12,7 @@ import { useToast } from '../contexts/ToastContext';
 import type { Report, QueryResult } from '../types';
 
 export const Dashboard: React.FC = () => {
-  const { reports, reportGroups, loading: reportsLoading, fetchMyReports, executeReport, exportReport } = useReports();
+  const { reports, reportGroups, loading: reportsLoading, fetchMyReports, executeReport, exportReport, fetchParamOptions } = useReports();
   const { success, error: showError } = useToast();
   const [selectedReport, setSelectedReport] = useState<Report | null>(null);
   const [paramValues, setParamValues] = useState<Record<string, any>>({});
@@ -170,6 +170,7 @@ export const Dashboard: React.FC = () => {
                     parameters={selectedReport.parameters}
                     values={paramValues}
                     onChange={(name, value) => setParamValues((prev) => ({ ...prev, [name]: value }))}
+                    fetchOptions={(param) => fetchParamOptions(selectedReport.id, param)}
                   />
                 </div>
               )}
@@ -201,6 +202,8 @@ export const Dashboard: React.FC = () => {
                           rows={rs}
                           loading={executing}
                           emptyText="Không có dữ liệu"
+                          recordsetMetadata={result?.recordsetMetadata}
+                          recordsetIndex={idx}
                         />
                       </div>
                     </div>

@@ -1,20 +1,24 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Spinner } from './ui/Card';
+import type { RecordsetMetadata } from '../types';
 
 interface DataTableProps {
   columns: string[];
   rows: Record<string, any>[];
   loading?: boolean;
   emptyText?: string;
+  /** Metadata kiểu từ backend — dùng để phân biệt date serial vs. số thường */
+  recordsetMetadata?: RecordsetMetadata[];
+  /** Recordset index hiện tại */
+  recordsetIndex?: number;
 }
 
 // ─────────────────────────────────────────────
-// Date detection & formatting
+// Date formatting (pure utilities)
 // ─────────────────────────────────────────────
 
 /** Excel serial number → "dd/MM/yyyy" or "dd/MM/yyyy HH:mm:ss" */
 function excelSerialToString(serial: number, includeTime = false): string {
-  // Excel epoch = 30/12/1899 (UTC to avoid timezone shift)
   const EXCEL_EPOCH_MS = Date.UTC(1899, 11, 30);
   const ms = serial * 86400 * 1000;
   const d = new Date(EXCEL_EPOCH_MS + ms);
@@ -32,9 +36,32 @@ function excelSerialToString(serial: number, includeTime = false): string {
   return `${day}/${month}/${year}`;
 }
 
-/** True if a number looks like an Excel date serial (>= 25569 = 1970-01-01, reasonable range) */
+/**
+ * Build a Set of uppercase date/datetime field names from recordsetMetadata.
+ * Nếu có metadata → chỉ những field trong Set mới được hiển thị là date.
+ * Fallback: dùng serial range heuristic (cho data cũ không có metadata).
+ */
+function buildDateFieldSet(
+  recordsetMetadata?: RecordsetMetadata[],
+  recordsetIndex?: number
+): Set<string> {
+  const set = new Set<string>();
+  if (!recordsetMetadata) return set;
+
+  const rsIdx = recordsetIndex ?? 0;
+  const rm = recordsetMetadata.find(r => r.recordsetIndex === rsIdx);
+  if (!rm) return set;
+
+  for (const f of rm.fields) {
+    if (f.detectedType === 'date' || f.detectedType === 'datetime') {
+      set.add(f.normalizedFieldName);
+    }
+  }
+  return set;
+}
+
+/** True if a number looks like an Excel date serial (fallback heuristic). */
 function isExcelSerial(n: number): boolean {
-  // 25569 = 1970-01-01, 109205 = 2099-12-31 — filter out plain numbers
   return n >= 25569 && n <= 109205;
 }
 
@@ -43,7 +70,14 @@ export const DataTable: React.FC<DataTableProps> = ({
   rows,
   loading,
   emptyText = 'Không có dữ liệu',
+  recordsetMetadata,
+  recordsetIndex = 0,
 }) => {
+  // Build date field set từ metadata
+  const dateFieldSet = useMemo(
+    () => buildDateFieldSet(recordsetMetadata, recordsetIndex),
+    [recordsetMetadata, recordsetIndex]
+  );
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center h-full py-20 gap-4">
@@ -62,11 +96,28 @@ export const DataTable: React.FC<DataTableProps> = ({
     );
   }
 
-  const formatValue = (value: any): string => {
+  /**
+   * Format giá trị cho hiển thị.
+   *
+   * Logic (theo thứ tự ưu tiên):
+   *  1. Nếu có recordsetMetadata → chỉ field trong dateFieldSet mới format date.
+   *  2. Nếu không có metadata → fallback dùng serial range heuristic (backward compat).
+   *  3. Số nằm trong date range nhưng KHÔNG trong dateFieldSet → hiển thị thường.
+   *
+   * @param value    Giá trị cell
+   * @param colName  Tên cột (dùng lookup trong dateFieldSet)
+   */
+  const formatValue = (value: any, colName: string): string => {
     if (value === null || value === undefined) return '—';
     if (typeof value === 'number') {
-      // Excel serial date range: 25569 (1970-01-01) → 109205 (2099-12-31)
+      const upper = colName.toUpperCase();
+      const isKnownDateField = dateFieldSet.size > 0 && dateFieldSet.has(upper);
+      if (isKnownDateField) {
+        // Backend đã xác nhận đây là date/datetime field
+        return excelSerialToString(value, value % 1 !== 0);
+      }
       if (isExcelSerial(value)) {
+        // Fallback: không có metadata → dùng range heuristic (cũ)
         return excelSerialToString(value, value % 1 !== 0);
       }
       return value.toLocaleString('vi-VN');
@@ -112,7 +163,7 @@ export const DataTable: React.FC<DataTableProps> = ({
                   key={col}
                   className="px-5 py-4 whitespace-nowrap text-[13px] text-slate-600 font-medium"
                 >
-                  {formatValue(row[col])}
+                  {formatValue(row[col], col)}
                 </td>
               ))}
             </tr>

@@ -506,14 +506,32 @@ export class ReportService {
 
   // Parameters
   async getReportParameters(reportId: string): Promise<ReportParameter[]> {
-    const params = configDb<any>(
+    const rows = configDb<any>(
       'SELECT * FROM ReportParameters WHERE reportId = $reportId ORDER BY displayOrder',
       { reportId }
     );
-    return params.map(p => ({
-      ...p,
-      isRequired: !!p.isRequired,
+    return rows.map(p => ({
+      id: p.id,
+      reportId: p.reportId,
+      paramName: p.paramName,
+      paramLabel: p.paramLabel ?? p.paramName,
+      // SQL metadata
+      sqlType: p.sqlType ?? null,
+      maxLength: p.maxLength ?? null,
+      precision: p.precision ?? null,
+      scale: p.scale ?? null,
+      isNullable: !!p.isNullable,
+      hasDefaultValue: !!p.hasDefaultValue,
+      // Business config
+      paramType: (p.paramType as any) ?? 'text',
+      valueMode: (p.valueMode as any) ?? 'single',
+      optionsSourceType: (p.optionsSourceType as any) ?? 'none',
       options: p.options ? JSON.parse(p.options) : null,
+      optionsQuery: p.optionsQuery ?? null,
+      placeholder: p.placeholder ?? null,
+      defaultValue: p.defaultValue ?? null,
+      isRequired: !!p.isRequired,
+      displayOrder: p.displayOrder ?? 0,
     }));
   }
 
@@ -521,18 +539,39 @@ export class ReportService {
     configExec('DELETE FROM ReportParameters WHERE reportId = $reportId', { reportId });
     for (const p of params) {
       configExec(
-        `INSERT INTO ReportParameters (id, reportId, paramName, paramLabel, paramType, defaultValue, isRequired, displayOrder, options)
-         VALUES ($id, $reportId, $paramName, $paramLabel, $paramType, $defaultValue, $isRequired, $displayOrder, $options)`,
+        `INSERT INTO ReportParameters (
+          id, reportId, paramName, paramLabel,
+          sqlType, maxLength, precision, scale, isNullable, hasDefaultValue,
+          paramType, valueMode, optionsSourceType, options, optionsQuery, placeholder,
+          defaultValue, isRequired, displayOrder
+        ) VALUES (
+          $id, $reportId, $paramName, $paramLabel,
+          $sqlType, $maxLength, $precision, $scale, $isNullable, $hasDefaultValue,
+          $paramType, $valueMode, $optionsSourceType, $options, $optionsQuery, $placeholder,
+          $defaultValue, $isRequired, $displayOrder
+        )`,
         {
           id: uuidv4(),
           reportId,
           paramName: p.paramName,
-          paramLabel: p.paramLabel || p.paramName,
-          paramType: p.paramType || 'text',
-          defaultValue: p.defaultValue || null,
-          isRequired: p.isRequired ? 1 : 0,
-          displayOrder: p.displayOrder || 0,
+          paramLabel: p.paramLabel || p.paramName || p.paramName,
+          // SQL metadata
+          sqlType: p.sqlType ?? null,
+          maxLength: p.maxLength ?? null,
+          precision: p.precision ?? null,
+          scale: p.scale ?? null,
+          isNullable: p.isNullable !== undefined ? (p.isNullable ? 1 : 0) : 1,
+          hasDefaultValue: p.hasDefaultValue ? 1 : 0,
+          // Business config
+          paramType: p.paramType ?? 'text',
+          valueMode: p.valueMode ?? 'single',
+          optionsSourceType: p.optionsSourceType ?? 'none',
           options: p.options ? JSON.stringify(p.options) : null,
+          optionsQuery: p.optionsQuery ?? null,
+          placeholder: p.placeholder ?? null,
+          defaultValue: p.defaultValue ?? null,
+          isRequired: p.isRequired ? 1 : 0,
+          displayOrder: p.displayOrder ?? 0,
         }
       );
     }
@@ -540,18 +579,36 @@ export class ReportService {
 
   // Mappings
   async getReportMappings(reportId: string): Promise<ReportMapping[]> {
-    return configDb<ReportMapping>(
+    const rows = configDb<any>(
       'SELECT * FROM ReportMappings WHERE reportId = $reportId ORDER BY displayOrder',
       { reportId }
     );
+    return rows.map(m => ({
+      id: m.id,
+      reportId: m.reportId,
+      fieldName: m.fieldName,
+      cellAddress: m.cellAddress ?? null,
+      mappingType: (m.mappingType as any) ?? 'list',
+      displayOrder: m.displayOrder ?? 0,
+      sheetName: m.sheetName ?? null,
+      recordsetIndex: m.recordsetIndex ?? 0,
+      // Export config
+      valueType: m.valueType ?? null,
+      formatPattern: m.formatPattern ?? null,
+    }));
   }
 
   async setReportMappings(reportId: string, mappings: CreateReportMappingDto[]): Promise<void> {
     configExec('DELETE FROM ReportMappings WHERE reportId = $reportId', { reportId });
     for (const m of mappings) {
       configExec(
-        `INSERT INTO ReportMappings (id, reportId, fieldName, cellAddress, mappingType, displayOrder, sheetName, recordsetIndex)
-         VALUES ($id, $reportId, $fieldName, $cellAddress, $mappingType, $displayOrder, $sheetName, $recordsetIndex)`,
+        `INSERT INTO ReportMappings (
+          id, reportId, fieldName, cellAddress, mappingType, displayOrder,
+          sheetName, recordsetIndex, valueType, formatPattern
+        ) VALUES (
+          $id, $reportId, $fieldName, $cellAddress, $mappingType, $displayOrder,
+          $sheetName, $recordsetIndex, $valueType, $formatPattern
+        )`,
         {
           id: uuidv4(),
           reportId,
@@ -561,6 +618,8 @@ export class ReportService {
           displayOrder: m.displayOrder || 0,
           sheetName: m.sheetName || null,
           recordsetIndex: m.recordsetIndex ?? 0,
+          valueType: m.valueType || null,
+          formatPattern: m.formatPattern || null,
         }
       );
     }

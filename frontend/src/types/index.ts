@@ -30,7 +30,7 @@ export interface SetUserPermissionsDto {
   canDeleteGroup?: boolean;
 }
 
-// Report Group (standalone — từ backend)
+// Report Group
 export interface ReportGroup {
   id: string;
   name: string;
@@ -39,7 +39,6 @@ export interface ReportGroup {
   createdAt?: string;
 }
 
-// ReportGroup với danh sách báo cáo (cho Sidebar)
 export interface ReportGroupView {
   id: string;
   name: string;
@@ -60,7 +59,7 @@ export interface UserReportGroupPermission {
   reportGroupId: string;
 }
 
-// Full user payload for management UI
+// Full user payload
 export interface UserWithPermissions {
   user: Omit<User, 'password'>;
   permissions: UserPermission | null;
@@ -73,22 +72,87 @@ export interface LoginResponse {
   user: User;
 }
 
-// Report Parameter
-export type ParamType = 'text' | 'date' | 'number' | 'select' | 'multiselect';
+// ─────────────────────────────────────────────
+// Report Parameter types
+// ─────────────────────────────────────────────
+
+/** Loại tham số cho UI nhập liệu */
+export type ParamType = 'text' | 'number' | 'date' | 'datetime' | 'select' | 'multiselect' | 'textarea';
+
+/** Cách serialize giá trị khi gửi xuống SP */
+export type ValueMode = 'single' | 'csv' | 'json';
+
+/** Nguồn options cho select/multiselect */
+export type OptionsSourceType = 'none' | 'static' | 'sql';
+
+/** Một option cho select/multiselect */
+export interface ParamOption {
+  value: string;
+  label: string;
+}
+
 export interface ReportParameter {
   id: string;
   reportId: string;
   paramName: string;
   paramLabel: string | null;
+
+  // SQL metadata (từ SP)
+  sqlType?: string | null;
+  maxLength?: number | null;
+  precision?: number | null;
+  scale?: number | null;
+  isNullable?: boolean;
+  hasDefaultValue?: boolean;
+
+  // Business config (do admin quyết định)
   paramType: ParamType;
+  valueMode: ValueMode;
+  optionsSourceType: OptionsSourceType;
+  options: ParamOption[] | null;
+  optionsQuery: string | null;
+  placeholder: string | null;
   defaultValue: string | null;
   isRequired: boolean;
   displayOrder: number;
-  options: string[] | null;
 }
 
-// Report Mapping
+export interface CreateParamDto {
+  paramName: string;
+  paramLabel?: string;
+
+  // SQL metadata
+  sqlType?: string | null;
+  maxLength?: number | null;
+  precision?: number | null;
+  scale?: number | null;
+  isNullable?: boolean;
+  hasDefaultValue?: boolean;
+
+  // Business config
+  paramType?: ParamType;
+  valueMode?: ValueMode;
+  optionsSourceType?: OptionsSourceType;
+  options?: ParamOption[] | null;
+  optionsQuery?: string | null;
+  placeholder?: string | null;
+  defaultValue?: string | null;
+  isRequired?: boolean;
+  displayOrder?: number;
+}
+
+// ─────────────────────────────────────────────
+// Report Mapping types
+// ─────────────────────────────────────────────
+
 export type MappingType = 'scalar' | 'list' | 'param';
+
+/**
+ * Loại giá trị quyết định cách convert khi export Excel.
+ * NGUỒN SỰ THẬT DUY NHẤT cho export — không đoán từ runtime.
+ */
+export type MappingValueType = 'text' | 'number' | 'date' | 'datetime';
+
 export interface ReportMapping {
   id: string;
   reportId: string;
@@ -97,9 +161,33 @@ export interface ReportMapping {
   mappingType: MappingType;
   displayOrder: number;
   sheetName?: string | null;
+  /** Chỉ định lấy dữ liệu từ recordset nào. 0 = đầu tiên. */
+  recordsetIndex?: number | null;
+
+  // Export config (nguồn sự thật)
+  /** Kiểu giá trị khi export. DETERMINISTIC. */
+  valueType?: MappingValueType | null;
+  /** Pattern format tùy chỉnh. Null = dùng mặc định. */
+  formatPattern?: string | null;
 }
 
-// Report Permission
+export interface CreateMappingDto {
+  fieldName: string;
+  cellAddress?: string;
+  mappingType?: MappingType;
+  displayOrder?: number;
+  sheetName?: string;
+  recordsetIndex?: number;
+  /** Kiểu giá trị khi export. Mặc định 'text'. */
+  valueType?: MappingValueType | null;
+  /** Pattern format tùy chỉnh. */
+  formatPattern?: string | null;
+}
+
+// ─────────────────────────────────────────────
+// Report / Permission
+// ─────────────────────────────────────────────
+
 export interface ReportPermission {
   id: string;
   reportId: string;
@@ -108,7 +196,6 @@ export interface ReportPermission {
   canExport: boolean;
 }
 
-// Report
 export interface Report {
   id: string;
   name: string;
@@ -126,14 +213,45 @@ export interface Report {
   permissions?: ReportPermission[];
 }
 
+export interface CreateReportDto {
+  name: string;
+  groupName?: string;
+  groupIcon?: string;
+  spName: string;
+  description?: string;
+  parameters?: CreateParamDto[];
+  mappings?: CreateMappingDto[];
+}
+
+// ─────────────────────────────────────────────
 // Query Result
+// ─────────────────────────────────────────────
+
+export interface RecordsetMetadata {
+  recordsetIndex: number;
+  fields: FieldMetadata[];
+}
+
+export interface FieldMetadata {
+  fieldName: string;
+  normalizedFieldName: string;
+  detectedType: 'text' | 'number' | 'date' | 'datetime' | 'boolean' | 'unknown';
+}
+
 export interface QueryResult {
   columns: string[];
   rows: Record<string, any>[];
   recordsets?: Record<string, any>[][];
+  /** Metadata kiểu theo từng recordset — nguồn thật cho export */
+  recordsetMetadata?: RecordsetMetadata[];
+  /** @deprecated Legacy */
+  dateColumns?: string[];
 }
 
+// ─────────────────────────────────────────────
 // SP Metadata
+// ─────────────────────────────────────────────
+
 export interface SPInfo {
   name: string;
 }
@@ -163,7 +281,6 @@ export interface SPMetadata {
   recordsets?: Record<string, any>[][];
 }
 
-// Test Run Result (from backend /sp-metadata/test-run)
 export interface TestRunResult {
   columns: string[];
   rows: Record<string, any>[];
@@ -171,47 +288,19 @@ export interface TestRunResult {
   recordsets: Record<string, any>[][];
 }
 
-// Connection Status
+// ─────────────────────────────────────────────
+// System / API
+// ─────────────────────────────────────────────
+
 export interface ConnectionStatus {
   configDB: boolean;
   hospitalDB: boolean;
   hospitalConfigured: boolean;
 }
 
-// API Response
 export interface ApiResponse<T = any> {
   success: boolean;
   data?: T;
   message?: string;
   error?: string;
-}
-
-// Create/Update DTOs
-export interface CreateReportDto {
-  name: string;
-  groupName?: string;
-  groupIcon?: string;
-  spName: string;
-  description?: string;
-  parameters?: CreateParamDto[];
-  mappings?: CreateMappingDto[];
-}
-
-export interface CreateParamDto {
-  paramName: string;
-  paramLabel?: string;
-  paramType?: ParamType;
-  defaultValue?: string;
-  isRequired?: boolean;
-  displayOrder?: number;
-  options?: string[];
-}
-
-export interface CreateMappingDto {
-  fieldName: string;
-  cellAddress?: string;
-  mappingType?: MappingType;
-  displayOrder?: number;
-  sheetName?: string;
-  recordsetIndex?: number; // Index của result set (0, 1, 2...)
 }

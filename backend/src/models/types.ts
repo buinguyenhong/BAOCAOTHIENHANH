@@ -147,33 +147,93 @@ export interface UpdateReportDto {
 // =====================
 // Report Parameter types
 // =====================
-export type ParamType = 'text' | 'date' | 'number' | 'select' | 'multiselect';
 
+/** Loại tham số cho UI nhập liệu — quyết định cách user nhập giá trị */
+export type ParamType =
+  | 'text'      // text input
+  | 'number'    // number input
+  | 'date'      // date picker
+  | 'datetime'  // datetime picker
+  | 'select'    // single select
+  | 'multiselect' // multi select
+  | 'textarea'; // multiline text
+
+/** Cách serialize giá trị khi gửi xuống stored procedure */
+export type ValueMode = 'single' | 'csv' | 'json';
+
+/** Nguồn lấy options cho select/multiselect */
+export type OptionsSourceType = 'none' | 'static' | 'sql';
+
+/** Một option cho select/multiselect */
+export interface ParamOption {
+  value: string;
+  label: string;
+}
+
+/** Cấu hình đầy đủ của một tham số báo cáo.
+ *
+ * 2 tầng metadata:
+ *  • sql metadata: từ SP (sqlType, maxLength, precision, scale, isNullable, hasDefaultValue)
+ *    → dùng để gợi ý ban đầu cho admin
+ *  • business config: do admin quyết định (paramType, valueMode, options, v.v.)
+ *    → dùng để render UI và serialize khi chạy thật
+ */
 export interface ReportParameter {
   id: string;
   reportId: string;
-  paramName: string;
-  paramLabel: string | null;
+  paramName: string;        // tên gốc SP (giữ nguyên @ nếu có)
+  paramLabel: string | null; // label hiển thị
+
+  // SQL metadata (từ SP — read only, dùng để gợi ý)
+  sqlType?: string | null;
+  maxLength?: number | null;
+  precision?: number | null;
+  scale?: number | null;
+  isNullable?: boolean;
+  hasDefaultValue?: boolean;
+
+  // Business config (do admin quyết định)
   paramType: ParamType;
+  valueMode: ValueMode;          // cách serialize: single / csv / json
+  optionsSourceType: OptionsSourceType; // nguồn options
+  /** Options tĩnh — dùng khi optionsSourceType = 'static' */
+  options: ParamOption[] | null;
+  /** Query SQL lấy options — dùng khi optionsSourceType = 'sql' */
+  optionsQuery: string | null;
+  placeholder: string | null;
   defaultValue: string | null;
   isRequired: boolean;
   displayOrder: number;
-  options: string[] | null;
 }
 
 export interface CreateReportParamDto {
   paramName: string;
   paramLabel?: string;
+
+  // SQL metadata
+  sqlType?: string | null;
+  maxLength?: number | null;
+  precision?: number | null;
+  scale?: number | null;
+  isNullable?: boolean;
+  hasDefaultValue?: boolean;
+
+  // Business config
   paramType?: ParamType;
-  defaultValue?: string;
+  valueMode?: ValueMode;
+  optionsSourceType?: OptionsSourceType;
+  options?: ParamOption[] | null;
+  optionsQuery?: string | null;
+  placeholder?: string | null;
+  defaultValue?: string | null;
   isRequired?: boolean;
   displayOrder?: number;
-  options?: string[];
 }
 
 // =====================
 // Report Mapping types
 // =====================
+
 export type MappingType = 'scalar' | 'list' | 'param';
 
 export interface ReportMapping {
@@ -188,8 +248,26 @@ export interface ReportMapping {
    * Chỉ định lấy dữ liệu từ recordset nào.
    * 0 = recordset đầu tiên.
    * Nếu không có hoặc null → mặc định 0.
+   * BẮT BUỘC rõ ràng với scalar/list.
    */
   recordsetIndex?: number | null;
+
+  // ── Export config (nguồn sự thật cho Excel) ────────────────
+  /**
+   * Kiểu giá trị khi export.
+   * DETERMINISTIC: mapping quyết định, không đoán từ data runtime.
+   *
+   * Backward compat: nếu null → fallback an toàn:
+   *   • 'text' cho param mapping
+   *   • 'text' cho scalar/list nếu không detect được
+   */
+  valueType?: 'text' | 'number' | 'date' | 'datetime' | null;
+  /**
+   * Pattern format tùy chỉnh.
+   * Nếu null → dùng format mặc định theo valueType.
+   * Ví dụ: 'yyyy-MM-dd' cho date override.
+   */
+  formatPattern?: string | null;
 }
 
 export interface CreateReportMappingDto {
@@ -198,8 +276,11 @@ export interface CreateReportMappingDto {
   mappingType?: MappingType;
   displayOrder?: number;
   sheetName?: string;
-  /** Chỉ định lấy dữ liệu từ recordset nào. Mặc định 0. */
   recordsetIndex?: number;
+  /** Kiểu giá trị khi export. Mặc định 'text'. */
+  valueType?: 'text' | 'number' | 'date' | 'datetime' | null;
+  /** Pattern format tùy chỉnh. */
+  formatPattern?: string | null;
 }
 
 // =====================
@@ -277,55 +358,33 @@ export interface SPParameterMetadata {
 // =====================
 
 /**
- * Kết quả phân tích kiểu của một field trong một recordset cụ thể.
+ * QueryResult: kết quả execute stored procedure.
  *
- * Mỗi field chỉ có THẬT SỰ một kiểu, phát hiện bằng cách đọc giá trị thực tế.
- * Việc format Excel (numFmt) hoàn toàn dựa vào detectedType này.
- */
-export type DetectedDataType = 'text' | 'number' | 'date' | 'datetime';
-
-export interface FieldMetadata {
-  /** Tên field, viết HOA để lookup ổn định */
-  fieldName: string;
-  /** Kiểu phát hiện từ dữ liệu thực tế — không phải từ schema */
-  detectedType: DetectedDataType;
-}
-
-/**
- * Metadata cho một recordset cụ thể.
- * Dùng để export quyết định chính xác kiểu của từng field trong recordset đó.
- */
-export interface RecordsetMetadata {
-  recordsetIndex: number;
-  /** Danh sách field metadata, thứ tự giống cột đầu tiên của recordset */
-  fields: FieldMetadata[];
-}
-
-/**
- * QueryResult mới: thay `dateColumns: string[]` bằng `recordsetMetadata: RecordsetMetadata[]`.
+ * Chứa cả data đã convert và metadata kiểu theo từng recordset.
+ * Backend export dùng recordsetMetadata/executionMetadata.
+ * Frontend preview dùng rows/columns.
  *
- * Cách dùng khi export:
- *   1. Với một mapping (scalar/list), xác định recordsetIndex của nó.
- *   2. Tìm RecordsetMetadata tương ứng.
- *   3. Lookup FieldMetadata[fieldName] → detectedType.
- *   4. detectedType === 'date'     → serial + numFmt: 'dd/MM/yyyy'
- *      detectedType === 'datetime' → serial + numFmt: 'dd/MM/yyyy HH:mm:ss'
- *      detectedType === 'number'   → giữ nguyên number
- *      detectedType === 'text'     → giữ nguyên text
- *
- * Backward compat: `dateColumns` vẫn giữ lại trong interface để client cũ không bị break.
+ * Backward compat: dateColumns được giữ lại (global string[]) cho client cũ.
  */
 export interface QueryResult {
   columns: string[];
   rows: Record<string, any>[];
   recordsets?: Record<string, any>[][];
   /**
-   * Metadata chi tiết cho TỪNG recordset. Đây là nguồn thật cho export.
    * @deprecated Dùng recordsetMetadata thay thế.
+   * Legacy global date column names — dùng bởi client cũ.
    */
   dateColumns?: string[];
-  /** Metadata kiểu dữ liệu theo từng recordset — dùng để resolve format khi export */
-  recordsetMetadata?: RecordsetMetadata[];
+  /**
+   * Metadata kiểu chi tiết cho TỪNG recordset.
+   * Nguồn thật cho Excel export.
+   */
+  recordsetMetadata?: import('./excel.types.js').RecordsetMetadata[];
+  /**
+   * Wrapper chuẩn hóa cho recordsetMetadata.
+   * Dùng khi cần truyền metadata rõ ràng qua các layer.
+   */
+  executionMetadata?: import('./excel.types.js').QueryExecutionMetadata;
 }
 
 // =====================

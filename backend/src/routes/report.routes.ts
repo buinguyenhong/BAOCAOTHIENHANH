@@ -1,16 +1,13 @@
 import { Router, Request, Response } from 'express';
 import { reportService } from '../services/report.service.js';
 import { authService } from '../services/auth.service.js';
-import { excelService } from '../services/excel.service.js';
+import { excelExportService } from '../services/excel-export.js';
 import { auditService } from '../services/audit.service.js';
 import { authMiddleware, adminMiddleware } from '../middleware/auth.middleware.js';
 import { AuthRequest } from '../middleware/auth.middleware.js';
 import { checkReportView, checkReportExport } from '../middleware/permission.middleware.js';
-import {
-  normalizeQueryParams,
-  normalizeParamName,
-  buildParamLookup,
-} from '../utils/normalize.js';
+import { normalizeQueryParams } from '../utils/normalize.js';
+import { serializeReportParams } from '../services/param-serializer.js';
 
 const router = Router();
 
@@ -85,20 +82,13 @@ router.get(
       }
 
       // Normalize toàn bộ query string: @TuNgay, TuNgay, tungay → TUNGAY
-      const normalizedQuery = normalizeQueryParams(req.query as Record<string, any>);
+      const normalizedQuery = normalizeQueryParams(req.query as Record<string, unknown>);
 
-      // Map params theo report.parameters (dùng normalizeParamName để match)
-      const params: Record<string, any> = {};
-      if (report.parameters) {
-        for (const p of report.parameters) {
-          const key = normalizeParamName(p.paramName); // TUNGAY
-          const value = normalizedQuery[key];
-          if (value !== undefined && value !== '') {
-            // Giữ nguyên tên gốc (giữ @ prefix nếu có) khi gửi xuống SP
-            params[p.paramName] = value;
-          }
-        }
-      }
+      // Serialize params theo cấu hình báo cáo (paramType + valueMode)
+      const params: Record<string, string> = serializeReportParams(
+        report.parameters || [],
+        normalizedQuery
+      );
 
       const result = await reportService.executeReport(reportId, params);
 
@@ -118,7 +108,6 @@ router.get(
 );
 
 // POST /api/user/reports/:id/export - Export Excel
-// Backend là nguồn dữ liệu thật. Nếu client gửi recordsets → ignore + warning.
 router.post(
   '/user/reports/:id/export',
   authMiddleware,
@@ -134,7 +123,7 @@ router.post(
       // ⚠️ Nếu client gửi recordsets → log warning nhưng ignore (backward compat)
       const { recordsets: clientRecordsets, params: clientParams } = req.body as {
         recordsets?: any[][];
-        params?: Record<string, any>;
+        params?: Record<string, unknown>;
       };
       if (clientRecordsets) {
         console.warn(
@@ -142,28 +131,22 @@ router.post(
         );
       }
 
-      // Luôn normalize params từ client body (nếu có) hoặc dùng query
-      const rawParams: Record<string, any> = clientParams
-        ? buildParamLookup(clientParams)
+      // Serialize params từ client body theo cấu hình báo cáo
+      const rawParams: Record<string, unknown> = clientParams
+        ? clientParams
         : normalizeQueryParams(req.query as Record<string, any>);
 
-      // Map params theo report.parameters
-      const params: Record<string, any> = {};
-      if (report.parameters) {
-        for (const p of report.parameters) {
-          const key = normalizeParamName(p.paramName);
-          const value = rawParams[key];
-          if (value !== undefined && value !== '') {
-            params[p.paramName] = value;
-          }
-        }
-      }
+      // Serialize params theo cấu hình báo cáo (paramType + valueMode)
+      const params: Record<string, string> = serializeReportParams(
+        report.parameters || [],
+        rawParams
+      );
 
       // Backend tự gọi lại SP để lấy dữ liệu thật
       const result = await reportService.executeReport(reportId, params);
 
       const fileName = `${report.name.replace(/[^a-zA-Z0-9\u00C0-\u024F ]/g, '')}_${new Date().toISOString().split('T')[0]}.xlsx`;
-      const buffer = await excelService.exportReport(
+      const buffer = await excelExportService.exportReport(
         report.mappings || [],
         report.templateFile,
         params,
@@ -451,6 +434,57 @@ router.put(
       res.json({ success: true, message: 'Template đã được lưu', data: { fileName, path: savedPath } });
     } catch (err: any) {
       console.error('Upload template error:', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  }
+);
+
+// GET /api/reports/:id/parameters/options — Lấy options động cho param có optionsSourceType='sql'
+router.get(
+  '/reports/:id/parameters/options',
+  authMiddleware,
+  adminMiddleware,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const reportId = (req.params as any).id as string;
+      const { paramId } = req.query as { paramId?: string };
+
+      if (!paramId) {
+        return res.status(400).json({ success: false, error: 'Thiếu paramId' });
+      }
+
+      const params = await reportService.getReportParameters(reportId);
+      const param = params.find(p => p.id === paramId);
+
+      if (!param) {
+        return res.status(404).json({ success: false, error: 'Không tìm thấy tham số' });
+      }
+
+      if (param.optionsSourceType !== 'sql' || !param.optionsQuery) {
+        return res.json({ success: true, data: [] });
+      }
+
+      // Execute options query trên HospitalDB
+      try {
+        const { hospitalDb } = await import('../config/database.js');
+        const result = await hospitalDb(param.optionsQuery);
+        // Giả sử query trả về { value: string, label: string } hoặc chỉ 2 cột
+        const options = (result.recordset || []).map((row: any, idx: number) => {
+          if (row.value !== undefined && row.label !== undefined) {
+            return { value: String(row.value), label: String(row.label) };
+          }
+          const keys = Object.keys(row);
+          if (keys.length >= 2) {
+            return { value: String(row[keys[0]]), label: String(row[keys[1]]) };
+          }
+          return { value: String(idx), label: String(row[keys[0]]) };
+        });
+        res.json({ success: true, data: options });
+      } catch (dbErr: any) {
+        console.error('Options query error:', dbErr);
+        res.status(500).json({ success: false, error: `Lỗi truy vấn options: ${dbErr.message}` });
+      }
+    } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
     }
   }

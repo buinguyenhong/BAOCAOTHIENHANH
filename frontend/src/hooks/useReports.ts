@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useMemo } from 'react';
-import { reportApi } from '../api/report.api';
-import type { Report, QueryResult, ReportGroupView } from '../types';
+import { reportApi, adminReportApi } from '../api/report.api';
+import type { Report, QueryResult, ReportGroupView, ReportParameter } from '../types';
 
 export const useReports = () => {
   const [reports, setReports] = useState<Report[]>([]);
@@ -41,6 +41,23 @@ export const useReports = () => {
       return null;
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  /**
+   * Lấy options động cho param có optionsSourceType='sql'.
+   * Dùng bởi ParameterForm khi param.optionsSourceType === 'sql'.
+   */
+  const fetchParamOptions = useCallback(async (
+    _reportId: string,
+    param: ReportParameter
+  ): Promise<Array<{ value: string; label: string }>> => {
+    if (param.optionsSourceType !== 'sql' || !param.optionsQuery) return [];
+    try {
+      const res = await adminReportApi.getParamOptions(_reportId, param.id);
+      return res.success && res.data ? res.data : [];
+    } catch {
+      return [];
     }
   }, []);
 
@@ -86,5 +103,6 @@ export const useReports = () => {
     fetchMyReports,
     executeReport,
     exportReport,
+    fetchParamOptions,
   };
 };

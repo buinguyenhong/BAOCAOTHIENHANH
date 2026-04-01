@@ -109,6 +109,14 @@ export const adminReportApi = {
     const res = await api.get<ApiResponse<string[]>>(`/reports/${reportId}/template/sheets`);
     return res.data;
   },
+
+  /** Lấy options động cho param có optionsSourceType='sql' */
+  getParamOptions: async (reportId: string, paramId: string): Promise<ApiResponse<Array<{ value: string; label: string }>>> => {
+    const res = await api.get<ApiResponse<Array<{ value: string; label: string }>>>(
+      `/reports/${reportId}/parameters/options?paramId=${paramId}`
+    );
+    return res.data;
+  },
 };
 
 // SYSTEM endpoints

@@ -151,6 +151,39 @@ const initSchema = (db: Database.Database) => {
     }
   } catch (_) { /* ignore if table doesn't exist yet */ }
 
+  // Migration: thêm valueType và formatPattern vào ReportMappings
+  try {
+    const colInfo = db.prepare("PRAGMA table_info(ReportMappings)").all() as { name: string }[];
+    const hasValueType = colInfo.some(c => c.name === 'valueType');
+    if (!hasValueType) {
+      db.exec('ALTER TABLE ReportMappings ADD COLUMN valueType TEXT DEFAULT NULL');
+    }
+    const hasFormatPattern = colInfo.some(c => c.name === 'formatPattern');
+    if (!hasFormatPattern) {
+      db.exec('ALTER TABLE ReportMappings ADD COLUMN formatPattern TEXT DEFAULT NULL');
+    }
+  } catch (_) { /* ignore */ }
+
+  // Migration: mở rộng cấu hình ReportParameters
+  try {
+    const colInfo = db.prepare("PRAGMA table_info(ReportParameters)").all() as { name: string }[];
+    const addCol = (name: string, def: string) => {
+      if (!colInfo.some(c => c.name === name)) {
+        db.exec(`ALTER TABLE ReportParameters ADD COLUMN ${name} ${def}`);
+      }
+    };
+    addCol('sqlType', 'TEXT DEFAULT NULL');
+    addCol('maxLength', 'INTEGER DEFAULT NULL');
+    addCol('precision', 'INTEGER DEFAULT NULL');
+    addCol('scale', 'INTEGER DEFAULT NULL');
+    addCol('isNullable', 'INTEGER DEFAULT 1');
+    addCol('hasDefaultValue', 'INTEGER DEFAULT 0');
+    addCol('valueMode', "TEXT DEFAULT 'single'");
+    addCol('optionsSourceType', "TEXT DEFAULT 'none'");
+    addCol('optionsQuery', 'TEXT DEFAULT NULL');
+    addCol('placeholder', 'TEXT DEFAULT NULL');
+  } catch (_) { /* ignore */ }
+
   // Migration: thêm cột reportGroupId vào Reports nếu chưa có
   try {
     const colInfo = db.prepare("PRAGMA table_info(Reports)").all() as { name: string }[];

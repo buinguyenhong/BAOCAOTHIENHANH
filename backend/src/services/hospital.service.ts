@@ -1,121 +1,178 @@
+/**
+ * ┌──────────────────────────────────────────────────────────────────────────┐
+ * │  HOSPITAL SERVICE — Query execution + METADATA LAYER                      │
+ * │                                                                          │
+ * │  Tầng này chịu trách nhiệm:                                            │
+ * │    1. Execute stored procedure                                          │
+ * │    2. Convert Date objects → Excel serial numbers                        │
+ * │    3. Detect field types PER RECORDSET (metadata resolution)             │
+ * │    4. Trả về QueryResult đầy đủ + metadata                             │
+ * │                                                                          │
+ * │  KHÔNG chứa:                                                            │
+ * │    • Mapping resolution                                                  │
+ * │    • Excel write logic                                                  │
+ * │    • numFmt application                                                 │
+ * └──────────────────────────────────────────────────────────────────────────┘
+ */
 import { hospitalDb } from '../config/database.js';
 import {
   SPInfo,
   SPColumnMetadata,
   SPParameterMetadata,
   QueryResult,
+} from '../models/types.js';
+import {
   RecordsetMetadata,
   FieldMetadata,
-  DetectedDataType,
-} from '../models/types.js';
-
-const startOfMonth = (d: Date) => {
-  return new Date(d.getFullYear(), d.getMonth(), 1);
-};
-
-// ─────────────────────────────────────────────
-// Date / serial helpers
-// ─────────────────────────────────────────────
-
-/** Excel epoch = 30/12/1899 00:00:00 UTC */
-const EXCEL_EPOCH_MS = Date.UTC(1899, 11, 30);
-
-/** Convert a JS Date (from MSSQL) to an Excel serial number. */
-function dateToExcelSerial(date: Date): number {
-  return (date.getTime() - EXCEL_EPOCH_MS) / (1000 * 60 * 60 * 24);
-}
-
-/** True if a number is a plausible Excel date serial (1970-01-01 → 2099-12-31). */
-function isInDateSerialRange(n: number): boolean {
-  return n >= 25569 && n <= 109205;
-}
-
-/** True if this is a JS Date object (not a string, not a number). */
-function isDateObject(val: unknown): val is Date {
-  return val instanceof Date && !isNaN(val.getTime());
-}
+  FieldDetectedType,
+  QueryExecutionMetadata,
+  TYPE_DETECTION_SAMPLE_SIZE,
+} from '../models/excel.types.js';
+import {
+  isDateTimeSerial,
+  isPureDateSerial,
+  isJSDateObject,
+  dateToExcelSerial,
+} from './date.service.js';
 
 // ─────────────────────────────────────────────
-// Value type detection
+// Type detection
 // ─────────────────────────────────────────────
 
 /**
- * Detect the data type of a field from its actual values (up to 20 rows).
+ * Phát hiện kiểu thực tế của một field từ dữ liệu mẫu (20 dòng đầu).
  *
- * Confidence hierarchy:
- *  1. 'datetime' — values with fractional part are unambiguously datetimes.
- *  2. 'date'    — >= 80% of non-null values are in the date serial range AND
- *                 at least 80% of those have no fractional part (whole-number serials).
- *  3. 'number' — at least one non-null value is a plain number outside date range
- *                 or is a small integer.
- *  4. 'text'   — everything else (strings, mixed types).
+ * RULES PHÁT HIỆN (theo thứ tự ưu tiên):
  *
- * @param rows  Up to 20 sample rows from the recordset.
- * @returns     DetectedDataType for the field.
+ *  1. 'datetime' (HIGHEST PRIORITY)
+ *     ≥80% giá trị là datetime serial (nằm trong range + có phần thập phân)
+ *     → datetime serial có tính đặc thù cao, không nhầm được với số thường.
+ *
+ *  2. 'date'
+ *     ≥80% giá trị là date serial (nằm trong range + không có phần thập phân)
+ *     → Date serial thuần — dùng 80% threshold để tránh miss khi có NULL/mixed.
+ *
+ *  3. 'number'
+ *     Có ít nhất 1 giá trị là number hợp lệ KHÔNG nằm trong date serial range.
+ *     → STT, ID, mã BN, số tiền, v.v.
+ *
+ *  4. 'text'
+ *     Tất cả các trường hợp còn lại (string, mixed, NULL, v.v.)
+ *
+ * CƠ SỞ HEURISTIC:
+ *  • 80% threshold cho date/datetime: tránh miss khi data có NULL hoặc vài row lạ.
+ *  • Chỉ những số nằm NGOÀI date serial range (25569–109205) mới là 'number'.
+ *  • Số 5, 100, 12345 → nằm ngoài range → 'number' ✓
+ *  • Số 45000–55000 (khoảng 2023–2050) → nằm trong range → có thể là date
+ *
+ * @param values    Mảng giá trị (từ sample rows, có thể chứa null)
+ * @param fieldName Tên field — dùng để gợi ý type nếu data ambiguous
  */
-function detectFieldType(values: unknown[]): DetectedDataType {
+function detectFieldType(values: unknown[], fieldName: string): FieldDetectedType {
   const nonNull = values.filter(v => v != null);
   if (nonNull.length === 0) return 'text';
 
-  // --- Category 1: datetime (has fractional part) ---
+  const upperField = fieldName.toUpperCase();
+
+  // ── Skip date detection for fields clearly NOT dates ──
+  // Field có tên suggest không phải date → chỉ detect number/text
+  const NOT_DATE_FIELDS = ['STT', 'MA', 'ID', 'NO', 'SO', 'NAM', 'TUOI', 'DIENTHOAI', 'SDT', 'EMAIL', 'DIA_CHI', 'DCHI', 'CMND', 'CCCD'];
+  const clearlyNotDate = NOT_DATE_FIELDS.some(k => upperField.includes(k));
+  if (clearlyNotDate) {
+    const hasNumber = nonNull.some(v => typeof v === 'number' && !isNaN(v));
+    return hasNumber ? 'number' : 'text';
+  }
+
+  // ── Category 1: datetime serial (fractional date serials) ──
+  // datetime serial = nằm trong range + có phần thập phân
   const datetimeCount = nonNull.filter(v => {
-    const n = Number(v);
-    return typeof v === 'number' && isInDateSerialRange(n) && !isNaN(n) && n % 1 !== 0;
+    if (typeof v !== 'number' || isNaN(v)) return false;
+    return isDateTimeSerial(v);
   }).length;
   if (datetimeCount / nonNull.length >= 0.8) return 'datetime';
 
-  // --- Category 2: date (whole-number serials in range) ---
-  // These are the trickiest — we rely on the 80% heuristic.
-  const serialCount = nonNull.filter(v => {
-    const n = Number(v);
-    return typeof v === 'number' && isInDateSerialRange(n) && !isNaN(n) && n % 1 === 0;
-  }).length;
-  if (serialCount / nonNull.length >= 0.8) return 'date';
+  // ── Category 2: pure date serial (whole number date serials) ──
+  // Chỉ detect date khi có tên field gợi ý (tránh false positive)
+  const DATE_SUGGESTIVE_NAMES = ['NGAY', 'DATE', 'TIME', 'GIO', 'GIOI', 'TU', 'DEN', 'BD', 'KT', 'VAO', 'RA', 'SINH', 'HAN', 'HET', 'HEN', 'DANGKY', 'DK'];
+  const suggestiveField = DATE_SUGGESTIVE_NAMES.some(k => upperField.includes(k));
 
-  // --- Category 3: number (plain numbers) ---
-  // A field is a number if it has at least one non-null numeric value.
+  const serialCount = nonNull.filter(v => {
+    if (typeof v !== 'number' || isNaN(v)) return false;
+    return isPureDateSerial(v);
+  }).length;
+  const serialRatio = nonNull.length > 0 ? serialCount / nonNull.length : 0;
+
+  if (suggestiveField && serialRatio >= 0.8) return 'date';
+  if (serialRatio >= 0.9) return 'date'; // 90%+ là serial → chắc chắn là date dù tên gì
+
+  // ── Category 3: number (plain numbers, not date serials) ──
+  // A field is 'number' if it has at least one non-null numeric value
+  // AND the numeric values are NOT primarily date serials
   const hasNumber = nonNull.some(v => typeof v === 'number' && !isNaN(v));
   if (hasNumber) return 'number';
 
-  // --- Category 4: text (everything else) ---
+  // ── Category 4: text (strings, mixed, boolean, null) ──
   return 'text';
 }
 
+// ─────────────────────────────────────────────
+// Metadata builder
+// ─────────────────────────────────────────────
+
 /**
- * Build RecordsetMetadata for a single recordset.
- * Converts JS Date objects → Excel serial numbers in-place, then detects field types.
+ * Build RecordsetMetadata cho MỘT recordset.
  *
- * @param rawRows  Raw rows from MSSQL (may contain Date objects).
- * @param rsIdx    Index of this recordset in the array.
+ * Steps:
+ *  1. Collect raw values per field (cho type detection).
+ *  2. Convert Date objects → Excel serial numbers.
+ *  3. Detect type cho mỗi field.
+ *
+ * @param rawRows  Raw rows từ MSSQL (có thể chứa Date objects)
+ * @param rsIdx    Index của recordset
  */
-function buildRecordsetMetadata(rawRows: Record<string, any>[], rsIdx: number): {
-  converted: Record<string, any>[];
-  metadata: RecordsetMetadata;
-} {
-  // 1. Convert Date objects → Excel serial numbers, build value arrays for detection
-  const converted: Record<string, any>[] = [];
+function buildRecordsetMetadata(
+  rawRows: Record<string, any>[],
+  rsIdx: number
+): { converted: Record<string, any>[]; metadata: RecordsetMetadata } {
+  if (!rawRows || rawRows.length === 0) {
+    return { converted: [], metadata: { recordsetIndex: rsIdx, fields: [] } };
+  }
+
+  const fieldNames = Object.keys(rawRows[0]);
+
+  // Bước 1: Collect raw values + convert Date → serial (1 pass)
   const fieldValueArrays: Record<string, unknown[]> = {};
+  const converted: Record<string, any>[] = [];
 
   for (const row of rawRows) {
     const out: Record<string, any> = {};
-    for (const [key, val] of Object.entries(row)) {
-      // Collect raw values for type detection BEFORE converting
+    for (const key of fieldNames) {
+      const val = row[key];
+
+      // Collect raw values BEFORE conversion
       if (!(key in fieldValueArrays)) fieldValueArrays[key] = [];
       fieldValueArrays[key].push(val);
 
-      // Convert Date → serial
-      out[key] = isDateObject(val) ? dateToExcelSerial(val) : val;
+      // Convert Date → Excel serial
+      out[key] = isJSDateObject(val)
+        ? dateToExcelSerial(val)
+        : val;
     }
     converted.push(out);
   }
 
-  // 2. Detect type for each field from raw values (before serial conversion)
-  const SAMPLE_SIZE = 20;
-  const sample = rawRows.slice(0, SAMPLE_SIZE);
-  const fields: FieldMetadata[] = Object.keys(rawRows[0] || {}).map(fieldName => ({
-    fieldName: fieldName.toUpperCase(),
-    detectedType: detectFieldType(sample.map(r => r[fieldName])),
-  }));
+  // Bước 2: Detect type cho mỗi field từ raw values (trước serial conversion)
+  const sampleSize = Math.min(TYPE_DETECTION_SAMPLE_SIZE, rawRows.length);
+  const sample = rawRows.slice(0, sampleSize);
+
+  const fields: FieldMetadata[] = fieldNames.map(fieldName => {
+    const sampleValues = sample.map(r => r[fieldName]);
+    return {
+      fieldName,
+      normalizedFieldName: fieldName.toUpperCase(),
+      detectedType: detectFieldType(sampleValues, fieldName),
+    };
+  });
 
   return {
     converted,
@@ -124,27 +181,33 @@ function buildRecordsetMetadata(rawRows: Record<string, any>[], rsIdx: number): 
 }
 
 /**
- * Build all RecordsetMetadata for all recordsets.
- * Also populates the legacy `dateColumns` array for backward compat.
+ * Build metadata cho TẤT CẢ recordsets.
+ * Trả về cả data đã convert.
+ *
+ * BACKWARD COMPAT: Cũng tạo legacy `dateColumns` (global string[])
+ * để client cũ vẫn hoạt động.
  */
 function buildAllRecordsetMetadata(
   rawRecordsets: Record<string, any>[][]
 ): {
   recordsets: Record<string, any>[][];
   recordsetMetadata: RecordsetMetadata[];
+  executionMetadata: QueryExecutionMetadata;
+  /** Legacy — chỉ dùng cho backward compat */
   dateColumns: string[];
 } {
   const results = rawRecordsets.map((rs, idx) => buildRecordsetMetadata(rs, idx));
 
   const recordsets = results.map(r => r.converted);
   const recordsetMetadata = results.map(r => r.metadata);
+  const executionMetadata: QueryExecutionMetadata = { recordsets: recordsetMetadata };
 
-  // Legacy dateColumns: union of all 'date' and 'datetime' field names across recordsets.
+  // Legacy: union tất cả date/datetime field names
   const dateColSet = new Set<string>();
   for (const rm of recordsetMetadata) {
     for (const f of rm.fields) {
       if (f.detectedType === 'date' || f.detectedType === 'datetime') {
-        dateColSet.add(f.fieldName.toUpperCase());
+        dateColSet.add(f.normalizedFieldName);
       }
     }
   }
@@ -152,9 +215,14 @@ function buildAllRecordsetMetadata(
   return {
     recordsets,
     recordsetMetadata,
+    executionMetadata,
     dateColumns: [...dateColSet],
   };
 }
+
+// ─────────────────────────────────────────────
+// HospitalService
+// ─────────────────────────────────────────────
 
 export class HospitalService {
   // Lấy danh sách Stored Procedures
@@ -233,8 +301,12 @@ export class HospitalService {
   async testRun(
     spName: string,
     params: Record<string, any>
-  ): Promise<{ columns: string[]; rows: Record<string, any>[]; params: SPParameterMetadata[]; recordsets: Record<string, any>[][] }> {
-    // Lọc bỏ params có giá trị empty/null/undefined
+  ): Promise<{
+    columns: string[];
+    rows: Record<string, any>[];
+    params: SPParameterMetadata[];
+    recordsets: Record<string, any>[][];
+  }> {
     const cleanParams: Record<string, any> = {};
     for (const [k, v] of Object.entries(params)) {
       if (v !== undefined && v !== null && v !== '') {
@@ -242,13 +314,13 @@ export class HospitalService {
       }
     }
 
-    // Auto-set @TuNgay/@DenNgay nếu không có params hợp lệ
+    // Auto-set @TuNgay/@DenNgay
     if (Object.keys(cleanParams).length === 0) {
       const spParams = await this.getSPParameterMetadata(spName);
       for (const p of spParams) {
         const n = p.name.toLowerCase();
         if (n.includes('tungay') || n.includes('tunam')) {
-          const d = startOfMonth(new Date());
+          const d = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
           cleanParams[p.name] = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
         } else if (n.includes('denngay') || n.includes('dennam')) {
           const d = new Date();
@@ -268,7 +340,17 @@ export class HospitalService {
     };
   }
 
-  // Thực thi SP - hỗ trợ multi-recordsets
+  /**
+   * Thực thi stored procedure.
+   *
+   * Kết quả trả về:
+   *  • rows          — dòng đầu tiên của recordset[0] (legacy compat)
+   *  • recordsets    — tất cả recordsets (đã convert Date → serial)
+   *  • columns       — tên cột của recordset[0]
+   *  • recordsetMetadata — metadata kiểu TỪNG RECORDSET (nguồn thật cho export)
+   *  • executionMetadata — wrapper chuẩn hóa
+   *  • dateColumns   — legacy global list (backward compat)
+   */
   async executeStoredProcedure(
     spName: string,
     params: Record<string, any>
@@ -283,16 +365,25 @@ export class HospitalService {
 
       const result = await hospitalDb(spName, cleanParams, true);
 
-      // MSSQL: result.recordsets = mảng tất cả recordsets (chưa convert)
+      // MSSQL: result.recordsets = mảng tất cả recordsets (raw — Date objects chưa convert)
       const rawRecordsets: Record<string, any>[][] =
         (result as any).recordsets || [result.recordset || []];
 
-      // ── Convert Date objects + build per-recordset field metadata
-      const { recordsets, recordsetMetadata, dateColumns } = buildAllRecordsetMetadata(rawRecordsets);
+      // ── Build metadata + convert data
+      const { recordsets, recordsetMetadata, executionMetadata, dateColumns } =
+        buildAllRecordsetMetadata(rawRecordsets);
+
       const main = recordsets[0] || [];
 
       if (main.length === 0) {
-        return { columns: [], rows: [], recordsets, recordsetMetadata, dateColumns };
+        return {
+          columns: [],
+          rows: [],
+          recordsets,
+          recordsetMetadata,
+          executionMetadata,
+          dateColumns,
+        };
       }
 
       return {
@@ -300,6 +391,7 @@ export class HospitalService {
         rows: main,
         recordsets,
         recordsetMetadata,
+        executionMetadata,
         dateColumns,
       };
     } catch (err: any) {
