@@ -8,6 +8,36 @@ interface DataTableProps {
   emptyText?: string;
 }
 
+// ─────────────────────────────────────────────
+// Date detection & formatting
+// ─────────────────────────────────────────────
+
+/** Excel serial number → "dd/MM/yyyy" or "dd/MM/yyyy HH:mm:ss" */
+function excelSerialToString(serial: number, includeTime = false): string {
+  // Excel epoch = 30/12/1899 (UTC to avoid timezone shift)
+  const EXCEL_EPOCH_MS = Date.UTC(1899, 11, 30);
+  const ms = serial * 86400 * 1000;
+  const d = new Date(EXCEL_EPOCH_MS + ms);
+
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const year = d.getUTCFullYear();
+
+  if (includeTime) {
+    const hh = String(d.getUTCHours()).padStart(2, '0');
+    const mm = String(d.getUTCMinutes()).padStart(2, '0');
+    const ss = String(d.getUTCSeconds()).padStart(2, '0');
+    return `${day}/${month}/${year} ${hh}:${mm}:${ss}`;
+  }
+  return `${day}/${month}/${year}`;
+}
+
+/** True if a number looks like an Excel date serial (>= 25569 = 1970-01-01, reasonable range) */
+function isExcelSerial(n: number): boolean {
+  // 25569 = 1970-01-01, 109205 = 2099-12-31 — filter out plain numbers
+  return n >= 25569 && n <= 109205;
+}
+
 export const DataTable: React.FC<DataTableProps> = ({
   columns,
   rows,
@@ -35,6 +65,10 @@ export const DataTable: React.FC<DataTableProps> = ({
   const formatValue = (value: any): string => {
     if (value === null || value === undefined) return '—';
     if (typeof value === 'number') {
+      // Excel serial date range: 25569 (1970-01-01) → 109205 (2099-12-31)
+      if (isExcelSerial(value)) {
+        return excelSerialToString(value, value % 1 !== 0);
+      }
       return value.toLocaleString('vi-VN');
     }
     if (typeof value === 'boolean') {

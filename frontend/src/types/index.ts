@@ -213,5 +213,5 @@ export interface CreateMappingDto {
   mappingType?: MappingType;
   displayOrder?: number;
   sheetName?: string;
-  resultSetIndex?: number; // Index của result set (0, 1, 2...)
+  recordsetIndex?: number; // Index của result set (0, 1, 2...)
 }

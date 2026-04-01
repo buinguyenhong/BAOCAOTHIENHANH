@@ -186,12 +186,34 @@ export class ExcelService {
     if (source.protection) target.protection = snap(source.protection);
   }
 
+  /**
+   * Write a value to a cell, preserving the existing style and applying
+   * date numFmt if the column is known to be a date.
+   */
+  private writeCellValue(
+    cell: ExcelJS.Cell,
+    value: any,
+    isDate: boolean
+  ): void {
+    const saved = snapshotStyle(cell);
+    cell.value = smartType(value);
+    // IMPORTANT: restoreStyle must be called BEFORE setting numFmt,
+    // otherwise it overwrites the date format with the template's numFmt.
+    restoreStyle(cell, saved);
+    if (isDate) {
+      const num = Number(value);
+      const isDateTime = !isNaN(num) && num % 1 !== 0;
+      cell.numFmt = isDateTime ? 'dd/MM/yyyy hh:mm:ss' : 'dd/MM/yyyy';
+    }
+  }
+
   // ── fillParam: single value from params only ────────────
 
   private fillParam(
     ws: ExcelJS.Worksheet,
     mapping: ReportMapping,
-    params: Record<string, any>
+    params: Record<string, any>,
+    dateColumns: Set<string>
   ): void {
     const { fieldName, cellAddress } = mapping;
     if (!cellAddress) return;
@@ -200,9 +222,7 @@ export class ExcelService {
     if (value == null) return;
 
     const targetCell = ws.getCell(cellAddress);
-    const saved = snapshotStyle(targetCell);
-    targetCell.value = smartType(value);
-    restoreStyle(targetCell, saved);
+    this.writeCellValue(targetCell, value, dateColumns.has(fieldName.toUpperCase()));
   }
 
   // ── fillScalar: single value from data[0] only ───────────
@@ -210,7 +230,8 @@ export class ExcelService {
   private fillScalar(
     ws: ExcelJS.Worksheet,
     mapping: ReportMapping,
-    data: Record<string, any>[]
+    data: Record<string, any>[],
+    dateColumns: Set<string>
   ): void {
     const { fieldName, cellAddress } = mapping;
     if (!cellAddress || data.length === 0) return;
@@ -220,9 +241,7 @@ export class ExcelService {
     if (value == null) return;
 
     const targetCell = ws.getCell(cellAddress);
-    const saved = snapshotStyle(targetCell);
-    targetCell.value = smartType(value);
-    restoreStyle(targetCell, saved);
+    this.writeCellValue(targetCell, value, dateColumns.has(fieldName.toUpperCase()));
   }
 
   // ── fillList: data rows with block-level splice ─────────
@@ -232,7 +251,8 @@ export class ExcelService {
     mapping: ReportMapping,
     data: Record<string, any>[],
     blockStates: Record<string, BlockState>,
-    sheetName: string
+    sheetName: string,
+    dateColumns: Set<string>
   ): void {
     const { fieldName, cellAddress, recordsetIndex } = mapping;
     if (!cellAddress || data.length === 0) return;
@@ -242,6 +262,8 @@ export class ExcelService {
 
     const { col, row: startRow } = parsed;
     const rsIdx = recordsetIndex ?? 0;
+    const fieldKey = fieldName.toUpperCase();
+    const isDateCol = dateColumns.has(fieldKey);
 
     // ── Block key
     const blockKey = makeBlockKey(sheetName, rsIdx, startRow);
@@ -273,7 +295,6 @@ export class ExcelService {
 
     // ── Normalize rows for case-insensitive field lookup
     const normalized = normalizeRows(data);
-    const fieldKey = fieldName.toUpperCase();
 
     // ── Write each row
     for (let i = 0; i < data.length; i++) {
@@ -282,14 +303,17 @@ export class ExcelService {
       const targetCell = ws.getCell(`${col}${currentRowNum}`);
 
       if (i === 0) {
-        // First row: preserve template style
-        const saved = snapshotStyle(targetCell);
-        targetCell.value = smartType(val);
-        restoreStyle(targetCell, saved);
+        // First row: preserve template style, apply date numFmt if needed
+        this.writeCellValue(targetCell, val, isDateCol);
       } else {
-        // New rows: write value then clone style from template
+        // New rows: write value, clone template style, then override numFmt for dates
         targetCell.value = smartType(val);
         this.copyCellStyle(templateCell, targetCell);
+        if (isDateCol) {
+          const num = Number(val);
+          const isDateTime = !isNaN(num) && num % 1 !== 0;
+          targetCell.numFmt = isDateTime ? 'dd/MM/yyyy hh:mm:ss' : 'dd/MM/yyyy';
+        }
         this.copyRowStyle(templateRow, ws.getRow(currentRowNum));
       }
     }
@@ -330,10 +354,14 @@ export class ExcelService {
     templateFile: string | null,
     params: Record<string, any>,
     recordsets: Record<string, any>[][],
-    _outputFileName: string
+    _outputFileName: string,
+    dateColumns?: string[]
   ): Promise<Buffer> {
     // Reset per-export state
     this._blocks = {};
+
+    // Build a Set of uppercase date column names for fast lookup
+    const dateColSet = new Set<string>((dateColumns || []).map(c => c.toUpperCase()));
 
     const workbook = new ExcelJS.Workbook();
 
@@ -371,7 +399,7 @@ export class ExcelService {
     for (const mapping of paramMappings) {
       if (!isValidMapping(mapping)) continue;
       const ws = this.getSheet(workbook, mapping.sheetName);
-      this.fillParam(ws, mapping, params);
+      this.fillParam(ws, mapping, params, dateColSet);
     }
 
     // ── 5. Fill scalar mappings (recordset[0] only)
@@ -380,7 +408,7 @@ export class ExcelService {
       const ws = this.getSheet(workbook, mapping.sheetName);
       const rsIdx = mapping.recordsetIndex ?? 0;
       const data = resolveRecordset(recordsets, rsIdx);
-      this.fillScalar(ws, mapping, data);
+      this.fillScalar(ws, mapping, data, dateColSet);
     }
 
     // ── 6. Fill list mappings (with block-level splice coordination)
@@ -409,7 +437,7 @@ export class ExcelService {
         this._blocks[blockKey] = { spliced: false, colRow: {} };
       }
 
-      this.fillList(ws, mapping, data, this._blocks, targetSheetName);
+      this.fillList(ws, mapping, data, this._blocks, targetSheetName, dateColSet);
     }
 
     // ── 7. Serialize to buffer

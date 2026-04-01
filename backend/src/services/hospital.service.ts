@@ -5,6 +5,61 @@ const startOfMonth = (d: Date) => {
   return new Date(d.getFullYear(), d.getMonth(), 1);
 };
 
+/**
+ * Excel serial date: số ngày tính từ 30/12/1899.
+ * SQL Server datetime/date → JS Date → serial number → Excel hiểu đúng ngày, không timezone.
+ */
+function dateToExcelSerial(date: Date): number {
+  const EXCEL_EPOCH = new Date(Date.UTC(1899, 11, 30)); // 1899-12-30 00:00:00 UTC
+  const diffMs = date.getTime() - EXCEL_EPOCH.getTime();
+  return diffMs / (1000 * 60 * 60 * 24);
+}
+
+/** Kiểm tra có phải JS Date object (không phải string hay number) */
+function isDateObject(val: unknown): val is Date {
+  return val instanceof Date && !isNaN(val.getTime());
+}
+
+/** True nếu số là Excel serial date (25569–109205 ≈ 1970-01-01 → 2099-12-31) */
+function isExcelSerial(n: number): boolean {
+  return n >= 25569 && n <= 109205;
+}
+
+/**
+ * Detect các cột chứa date serial numbers.
+ * Một cột được coi là date nếu >= 80% giá trị non-null là serial dates.
+ */
+function detectDateColumns(rows: Record<string, any>[]): string[] {
+  if (rows.length === 0) return [];
+  const sample = rows.slice(0, 20); // chỉ lấy mẫu 20 dòng đầu
+  const dateCols: string[] = [];
+
+  for (const key of Object.keys(rows[0])) {
+    const values = sample.map(r => r[key]);
+    const nonNull = values.filter(v => v != null);
+    if (nonNull.length === 0) continue;
+    const dateCount = nonNull.filter(v => typeof v === 'number' && isExcelSerial(v)).length;
+    if (dateCount / nonNull.length >= 0.8) {
+      dateCols.push(key);
+    }
+  }
+  return dateCols;
+}
+
+/**
+ * Duyệt tất cả rows trong recordset, thay Date objects bằng Excel serial numbers.
+ * Giữ nguyên mọi key/value khác.
+ */
+function convertDates(rows: Record<string, any>[]): Record<string, any>[] {
+  return rows.map(row => {
+    const out: Record<string, any> = {};
+    for (const [key, val] of Object.entries(row)) {
+      out[key] = isDateObject(val) ? dateToExcelSerial(val) : val;
+    }
+    return out;
+  });
+}
+
 export class HospitalService {
   // Lấy danh sách Stored Procedures
   async listStoredProcedures(): Promise<SPInfo[]> {
@@ -133,17 +188,31 @@ export class HospitalService {
       const result = await hospitalDb(spName, cleanParams, true);
 
       // MSSQL: result.recordsets = mảng tất cả recordsets
-      const allRecordsets: Record<string, any>[][] = (result as any).recordsets || [result.recordset || []];
+      const rawRecordsets: Record<string, any>[][] = (result as any).recordsets || [result.recordset || []];
+      // Chuyển đổi Date objects → Excel serial numbers trước khi trả về
+      const allRecordsets = rawRecordsets.map(rs => convertDates(rs));
       const main = allRecordsets[0] || [];
 
+      // Detect date columns từ tất cả recordsets
+      const allDateColumns = allRecordsets.flatMap(rs => detectDateColumns(rs));
+      // Loại bỏ trùng lặp, giữ thứ tự xuất hiện
+      const seen = new Set<string>();
+      const dateColumns = allDateColumns.filter(c => {
+        const k = c.toUpperCase();
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+
       if (main.length === 0) {
-        return { columns: [], rows: [], recordsets: allRecordsets };
+        return { columns: [], rows: [], recordsets: allRecordsets, dateColumns };
       }
 
       return {
         columns: Object.keys(main[0]),
         rows: main,
         recordsets: allRecordsets,
+        dateColumns,
       };
     } catch (err: any) {
       console.error('Error executing SP:', err);

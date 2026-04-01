@@ -279,6 +279,8 @@ export interface QueryResult {
   columns: string[];
   rows: Record<string, any>[];
   recordsets?: Record<string, any>[][];
+  /** Các cột có giá trị là Excel serial date (để ExcelJS apply numFmt đúng) */
+  dateColumns?: string[];
 }
 
 // =====================

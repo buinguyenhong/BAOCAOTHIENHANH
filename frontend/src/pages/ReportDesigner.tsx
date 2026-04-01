@@ -202,7 +202,7 @@ export const ReportDesigner: React.FC = () => {
             mappingType: 'list' as const,
             displayOrder: idx + 1,
             sheetName: availableSheets[0] || undefined,
-            resultSetIndex: rsIdx, // Lưu index của result set
+            recordsetIndex: rsIdx, // Lưu index của result set
           }));
         });
         setAllResultSetMappings(allMappings);
@@ -257,19 +257,19 @@ export const ReportDesigner: React.FC = () => {
       }))
     );
 
-    // Build allResultSetMappings from saved mappings, grouping by resultSetIndex
+    // Build allResultSetMappings from saved mappings, grouping by recordsetIndex
     const loadedMappings = (report.mappings || []).map((m) => ({
       fieldName: m.fieldName,
       cellAddress: m.cellAddress || '',
       mappingType: m.mappingType,
       displayOrder: m.displayOrder,
       sheetName: m.sheetName || undefined,
-      resultSetIndex: (m as any).resultSetIndex ?? 0,
+      recordsetIndex: (m as any).recordsetIndex ?? 0,
     }));
 
     const grouped: Record<number, CreateMappingDto[]> = {};
     loadedMappings.forEach((m) => {
-      const idx = m.resultSetIndex ?? 0;
+      const idx = m.recordsetIndex ?? 0;
       if (!grouped[idx]) grouped[idx] = [];
       grouped[idx].push(m);
     });
@@ -910,7 +910,7 @@ export const ReportDesigner: React.FC = () => {
                       cellAddress: '',
                       mappingType: 'param' as const,
                       displayOrder: formMappings.length + idx + 1,
-                      resultSetIndex: selectedResultSet,
+                      recordsetIndex: selectedResultSet,
                     }));
                   if (newParamMappings.length > 0) {
                     setFormMappings(prev => [...prev, ...newParamMappings]);
@@ -935,7 +935,7 @@ export const ReportDesigner: React.FC = () => {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setFormMappings((m) => [...m, { fieldName: '', cellAddress: '', mappingType: 'list', displayOrder: m.length + 1, resultSetIndex: selectedResultSet }])}
+                onClick={() => setFormMappings((m) => [...m, { fieldName: '', cellAddress: '', mappingType: 'list', displayOrder: m.length + 1, recordsetIndex: selectedResultSet }])}
                 icon={<span>➕</span>}
               >
                 Thêm mapping

@@ -168,7 +168,8 @@ router.post(
         report.templateFile,
         params,
         result.recordsets || [result.rows],
-        fileName
+        fileName,
+        result.dateColumns
       );
 
       await auditService.log(
