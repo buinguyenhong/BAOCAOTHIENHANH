@@ -656,7 +656,10 @@ export class ReportService {
     if (!filePath) return [];
     const ExcelJS = (await import('exceljs')).default;
     const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(fs.readFileSync(filePath).buffer as ArrayBuffer);
+    // Use base64 string + { base64: true } — ExcelJS handles decode internally.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const b64 = fs.readFileSync(filePath, 'base64');
+    await (wb.xlsx.load as (data: any, opts?: any) => Promise<unknown>)(b64, { base64: true });
     return wb.worksheets.map(ws => ws.name);
   }
 }

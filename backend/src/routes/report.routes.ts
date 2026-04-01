@@ -169,7 +169,7 @@ router.post(
         params,
         result.recordsets || [result.rows],
         fileName,
-        result.dateColumns
+        result.recordsetMetadata
       );
 
       await auditService.log(

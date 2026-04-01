@@ -1,47 +1,76 @@
 /**
- * Excel Service - Export Engine
+ * Excel Service — Export Engine
  *
- * Key concepts:
- * - Block: uniquely identified by (sheetName + recordsetIndex + startRow).
- *   One block is splicedRows() exactly once. All list columns in the same block
- *   share the same starting row and grow together.
- * - recordsetIndex: explicit data source selector (default 0 = first recordset).
- * - sheetName: only determines which worksheet to write to.
- * - fillParam: only reads from params (never from recordset data).
- * - fillScalar: only reads from data[0] (first row of recordset).
- * - normalize rows to uppercase for case-insensitive field lookup.
+ * Architecture (4 clean layers):
+ *
+ *  ┌─ exportReport() ──────────────────────────────────────────────────────┐
+ *  │  1. Load workbook / create sheets                                    │
+ *  │  2. Build FieldTypeMap      ← keyed by "recordsetIndex|fieldName"   │
+ *  │  3. Fill param  → fillParam()                                        │
+ *  │  4. Fill scalar → fillScalar()                                      │
+ *  │  5. Fill list   → fillBlock()                                       │
+ *  │  6. Serialize buffer                                                │
+ *  └────────────────────────────────────────────────────────────────────┘
+ *
+ *  FieldTypeMap:
+ *    key = `${recordsetIndex}|${fieldName}`   (both uppercase)
+ *    value = DetectedDataType ('text' | 'number' | 'date' | 'datetime')
+ *
+ *  Value pipeline per cell:
+ *    raw value
+ *      ↓ resolveFieldType(fieldKey, recordsetIndex, typeMap)
+ *    DetectedDataType
+ *      ↓ convertForExcel(value, detectedType)
+ *    { value: string|number, numFmt: string|null }
+ *      ↓ writeCell(cell, { value, numFmt }, styleTemplate?)
+ *    Excel cell (formatted)
+ *
+ *  Block tracker (shared across all columns in same block):
+ *    key  = `${sheetName}|${recordsetIndex}|${startRow}`
+ *    state = { spliced, rowStart, rowCount, templateRow }
+ *    All columns write to the same row range — perfectly aligned.
  */
 import ExcelJS from 'exceljs';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { ReportMapping } from '../models/types.js';
 import {
-  normalizeRow,
-  normalizeRows,
-  buildParamLookup,
-  getNormalizedParam,
-} from '../utils/normalize.js';
+  ReportMapping,
+  RecordsetMetadata,
+  DetectedDataType,
+} from '../models/types.js';
+import { normalizeRows, getNormalizedParam } from '../utils/normalize.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TEMPLATES_DIR = path.join(__dirname, '../../templates');
 
 // ─────────────────────────────────────────────
-// Block Tracker
+// Types
 // ─────────────────────────────────────────────
 
-interface BlockState {
-  /** Rows have been spliced for this block already */
-  spliced: boolean;
-  /** Next free row for each column letter */
-  colRow: Record<string, number>;
+/** Fully resolved info for writing a cell. */
+interface ResolvedValue {
+  value: string | number;
+  /** null means "don't touch numFmt" (preserve template or default) */
+  numFmt: string | null;
 }
 
-function makeBlockKey(
-  sheetName: string,
-  recordsetIndex: number,
-  startRow: number
-): string {
+interface BlockState {
+  /** Has spliceRows been called for this block already? */
+  spliced: boolean;
+  /** First data row for this block (same for all columns) */
+  rowStart: number;
+  /** Number of data rows (same for all columns — alignment guarantee) */
+  rowCount: number;
+  /** Template row to clone style from */
+  templateRow: number;
+}
+
+// ─────────────────────────────────────────────
+// Block key
+// ─────────────────────────────────────────────
+
+function blockKey(sheetName: string, recordsetIndex: number, startRow: number): string {
   return `${sheetName}|${recordsetIndex}|${startRow}`;
 }
 
@@ -50,398 +79,409 @@ function makeBlockKey(
 // ─────────────────────────────────────────────
 
 /** Parse "A4" → { col: "A", row: 4 } */
-function parseCellAddress(addr: string): { col: string; row: number } | null {
+function parseCell(addr: string): { col: string; row: number } | null {
   const m = addr.match(/^([a-zA-Z]+)(\d+)$/);
   if (!m) return null;
   return { col: m[1].toUpperCase(), row: parseInt(m[2], 10) };
 }
 
-/** Parse column letter(s) to index (1-based): A→1, B→2, AA→27 */
-function colLetterToIndex(col: string): number {
-  let idx = 0;
-  for (const ch of col.toUpperCase()) {
-    idx = idx * 26 + (ch.charCodeAt(0) - 64);
-  }
-  return idx;
-}
-
-/** Detect if a value should be stored as number instead of string. */
-function smartType(val: any): string | number {
-  const s = String(val).trim();
-  if (
-    s !== '' &&
-    !isNaN(Number(val)) &&
-    s.length < 15 &&
-    !s.startsWith('0') &&
-    !/^\d{6,}$/.test(s)
-  ) {
-    return Number(val);
-  }
-  return s;
-}
-
-/** Snapshot full style of a cell. */
-function snapshotStyle(cell: ExcelJS.Cell): Record<string, any> {
-  const snap = (obj: any) => (obj ? JSON.parse(JSON.stringify(obj)) : undefined);
+/** Snapshot style (everything except numFmt — caller owns numFmt). */
+function snapStyle(cell: ExcelJS.Cell): Record<string, any> {
+  const j = (o: any) => (o ? JSON.parse(JSON.stringify(o)) : undefined);
   return {
-    font: snap(cell.font),
-    border: snap(cell.border),
-    fill: snap(cell.fill),
-    alignment: snap(cell.alignment),
-    numFmt: cell.numFmt,
-    protection: snap(cell.protection),
+    font:      j(cell.font),
+    border:    j(cell.border),
+    fill:      j(cell.fill),
+    alignment: j(cell.alignment),
+    protection: j(cell.protection),
+    // NOTE: numFmt is intentionally omitted — it is set by the value pipeline.
   };
 }
 
-/** Restore style snapshot onto a cell. */
-function restoreStyle(cell: ExcelJS.Cell, style: Record<string, any>): void {
-  if (style.font) cell.font = style.font as any;
-  if (style.border) cell.border = style.border as any;
-  if (style.fill) cell.fill = style.fill as any;
-  if (style.alignment) cell.alignment = style.alignment as any;
-  if (style.numFmt) cell.numFmt = style.numFmt;
-  if (style.protection) cell.protection = style.protection as any;
+/** Restore style, skipping numFmt. */
+function restoreStyle(cell: ExcelJS.Cell, snap: Record<string, any>): void {
+  if (snap.font)      cell.font      = snap.font;
+  if (snap.border)    cell.border    = snap.border;
+  if (snap.fill)      cell.fill      = snap.fill;
+  if (snap.alignment)  cell.alignment = snap.alignment;
+  if (snap.protection) cell.protection = snap.protection;
+}
+
+/** Clone row height from template. */
+function copyRowHeight(src: ExcelJS.Row, dst: ExcelJS.Row): void {
+  if (src.height) dst.height = src.height;
+}
+
+/** Clone cell style from template, then override numFmt if provided. */
+function applyCellStyle(
+  target: ExcelJS.Cell,
+  template: ExcelJS.Cell,
+  numFmt: string | null
+): void {
+  const j = (o: any) => (o ? JSON.parse(JSON.stringify(o)) : undefined);
+  if (template.font)      target.font      = j(template.font);
+  if (template.border)    target.border    = j(template.border);
+  if (template.fill)      target.fill      = j(template.fill);
+  if (template.alignment)  target.alignment = j(template.alignment);
+  target.numFmt = numFmt ?? (template.numFmt || 'General');
+  if (template.protection) target.protection = j(template.protection);
 }
 
 // ─────────────────────────────────────────────
-// Validation helpers
+// Recordset / field metadata helpers
+// ─────────────────────────────────────────────
+
+/**
+ * Build a flat lookup map from "recordsetIndex|fieldName" → DetectedDataType.
+ *
+ * This is the single source of truth for type decisions during export.
+ * Resolved at export time from the recordsetMetadata array.
+ */
+function buildFieldTypeMap(metadata: RecordsetMetadata[]): Map<string, DetectedDataType> {
+  const map = new Map<string, DetectedDataType>();
+  for (const rm of metadata) {
+    for (const f of rm.fields) {
+      map.set(`${rm.recordsetIndex}|${f.fieldName.toUpperCase()}`, f.detectedType);
+    }
+  }
+  return map;
+}
+
+/** Resolve recordset data by index, with fallback. */
+function resolveRecordset(
+  recordsets: Record<string, any>[][],
+  recordsetIndex: number | null | undefined
+): Record<string, any>[] {
+  const idx = recordsetIndex ?? 0;
+  return (idx >= 0 && idx < recordsets.length) ? recordsets[idx] : (recordsets[0] ?? []);
+}
+
+// ─────────────────────────────────────────────
+// Value conversion (the value pipeline)
+// ─────────────────────────────────────────────
+
+/**
+ * Convert a raw value for Excel using the resolved DetectedDataType.
+ *
+ * Rules:
+ *  - 'number':   coerce to Number if possible; string IDs (>6 digits, starts with 0) stay as text.
+ *  - 'date':      coerce to Number (Excel serial); Excel will display as date via numFmt.
+ *  - 'datetime':  coerce to Number (serial with fraction); numFmt will add time part.
+ *  - 'text':      return as-is; numFmt = null (don't touch cell formatting).
+ *
+ *  This is the ONLY place where value coercion happens. smartType decisions are
+ *  fully context-driven by the field's detected type.
+ */
+function convertForExcel(raw: unknown, type: DetectedDataType): ResolvedValue {
+  if (raw == null) return { value: '', numFmt: null };
+
+  switch (type) {
+    case 'datetime': {
+      // Excel serial + time portion → dd/MM/yyyy hh:mm:ss
+      const n = Number(raw);
+      return { value: isNaN(n) ? String(raw) : n, numFmt: 'dd/MM/yyyy hh:mm:ss' };
+    }
+    case 'date': {
+      // Excel serial, whole number → dd/MM/yyyy
+      const n = Number(raw);
+      return { value: isNaN(n) ? String(raw) : n, numFmt: 'dd/MM/yyyy' };
+    }
+    case 'number': {
+      // Coerce to number following standard rules
+      const s = String(raw).trim();
+      if (s !== '' && !isNaN(Number(raw)) && s.length < 15 && !s.startsWith('0') && !/^\d{6,}$/.test(s)) {
+        return { value: Number(raw), numFmt: null };
+      }
+      return { value: s, numFmt: null };
+    }
+    case 'text':
+    default:
+      return { value: String(raw), numFmt: null };
+  }
+}
+
+/** Write a resolved value + numFmt to a cell, preserving all other styles. */
+function writeResolved(
+  cell: ExcelJS.Cell,
+  rv: ResolvedValue,
+  templateCell: ExcelJS.Cell | null
+): void {
+  const snap = snapStyle(cell);
+  cell.value = rv.value;
+  restoreStyle(cell, snap);
+  if (rv.numFmt) {
+    cell.numFmt = rv.numFmt;
+  } else if (templateCell) {
+    // For non-date cells: clone template numFmt so numbers behave consistently
+    if (!cell.numFmt || cell.numFmt === 'General') {
+      cell.numFmt = templateCell.numFmt || 'General';
+    }
+  }
+}
+
+// ─────────────────────────────────────────────
+// Validation
 // ─────────────────────────────────────────────
 
 function isValidMapping(m: ReportMapping): boolean {
-  if (!m.mappingType) {
-    console.warn(`[ExcelService] mapping ${m.id} missing mappingType — skipping`);
-    return false;
-  }
-  if (!m.fieldName) {
-    console.warn(`[ExcelService] mapping ${m.id} missing fieldName — skipping`);
-    return false;
-  }
+  if (!m.mappingType) { console.warn(`[Excel] mapping ${m.id} missing mappingType — skip`); return false; }
+  if (!m.fieldName)    { console.warn(`[Excel] mapping ${m.id} missing fieldName   — skip`); return false; }
   if (m.mappingType !== 'param' && !m.cellAddress) {
-    console.warn(`[ExcelService] mapping ${m.id} (${m.mappingType}) missing cellAddress — skipping`);
+    console.warn(`[Excel] mapping ${m.id} (${m.mappingType}) missing cellAddress — skip`);
     return false;
   }
   return true;
 }
 
 // ─────────────────────────────────────────────
-// Recordset resolver
-// ─────────────────────────────────────────────
-
-function resolveRecordset(
-  recordsets: Record<string, any>[][],
-  recordsetIndex: number | null | undefined
-): Record<string, any>[] {
-  const idx = recordsetIndex ?? 0;
-  if (idx >= 0 && idx < recordsets.length) {
-    return recordsets[idx];
-  }
-  return recordsets[0] ?? [];
-}
-
-// ─────────────────────────────────────────────
-// Main service
+// ExcelService
 // ─────────────────────────────────────────────
 
 export class ExcelService {
-  /**
-   * Per-export block tracker.
-   * Key = "sheetName|recordsetIndex|startRow", Value = BlockState.
-   */
   private _blocks: Record<string, BlockState> = {};
 
-  // ── Template resolution ──────────────────────────────────
+  // ── Template path resolver ────────────────────────────────
 
-  private resolveTemplatePath(templateFile: string | null): string | null {
-    if (!templateFile) return null;
-    const filePath = path.join(TEMPLATES_DIR, templateFile);
-    return fs.existsSync(filePath) ? filePath : null;
+  private resolveTemplate(file: string | null): string | null {
+    if (!file) return null;
+    const p = path.join(TEMPLATES_DIR, file);
+    return fs.existsSync(p) ? p : null;
   }
 
-  // ── Worksheet helpers ─────────────────────────────────────
+  // ── Worksheet resolver ─────────────────────────────────
 
-  private getSheet(workbook: ExcelJS.Workbook, sheetName?: string | null): ExcelJS.Worksheet {
-    if (sheetName && sheetName.trim()) {
-      const ws = workbook.getWorksheet(sheetName.trim());
+  private resolveSheet(wb: ExcelJS.Workbook, sheetName?: string | null): ExcelJS.Worksheet {
+    if (sheetName?.trim()) {
+      const ws = wb.getWorksheet(sheetName.trim());
       if (ws) return ws;
     }
-    if (workbook.worksheets.length === 0) {
-      return workbook.addWorksheet('Report');
-    }
-    return workbook.worksheets[0];
+    if (wb.worksheets.length === 0) return wb.addWorksheet('Report');
+    return wb.worksheets[0];
   }
 
-  // ── Style copy ───────────────────────────────────────────
-
-  private copyRowStyle(source: ExcelJS.Row, target: ExcelJS.Row): void {
-    if (source.height) target.height = source.height;
-  }
-
-  private copyCellStyle(source: ExcelJS.Cell, target: ExcelJS.Cell): void {
-    const snap = (obj: any) => (obj ? JSON.parse(JSON.stringify(obj)) : undefined);
-    if (source.font) target.font = snap(source.font);
-    if (source.border) target.border = snap(source.border);
-    if (source.fill) target.fill = snap(source.fill);
-    if (source.alignment) target.alignment = snap(source.alignment);
-    target.numFmt = source.numFmt || 'General';
-    if (source.protection) target.protection = snap(source.protection);
-  }
+  // ── Fill param ─────────────────────────────────────────
 
   /**
-   * Write a value to a cell, preserving the existing style and applying
-   * date numFmt if the column is known to be a date.
+   * param mapping: reads from the params object (not from any recordset).
+   * Type is always 'text' — params are strings from the HTTP request.
    */
-  private writeCellValue(
-    cell: ExcelJS.Cell,
-    value: any,
-    isDate: boolean
-  ): void {
-    const saved = snapshotStyle(cell);
-    cell.value = smartType(value);
-    // IMPORTANT: restoreStyle must be called BEFORE setting numFmt,
-    // otherwise it overwrites the date format with the template's numFmt.
-    restoreStyle(cell, saved);
-    if (isDate) {
-      const num = Number(value);
-      const isDateTime = !isNaN(num) && num % 1 !== 0;
-      cell.numFmt = isDateTime ? 'dd/MM/yyyy hh:mm:ss' : 'dd/MM/yyyy';
-    }
-  }
-
-  // ── fillParam: single value from params only ────────────
-
   private fillParam(
     ws: ExcelJS.Worksheet,
     mapping: ReportMapping,
-    params: Record<string, any>,
-    dateColumns: Set<string>
+    params: Record<string, any>
   ): void {
     const { fieldName, cellAddress } = mapping;
     if (!cellAddress) return;
+    const raw = getNormalizedParam(params, fieldName);
+    if (raw == null) return;
 
-    const value = getNormalizedParam(params, fieldName);
-    if (value == null) return;
-
-    const targetCell = ws.getCell(cellAddress);
-    this.writeCellValue(targetCell, value, dateColumns.has(fieldName.toUpperCase()));
+    // params are always text/date strings from user input — no special type detection needed
+    const rv = convertForExcel(raw, 'text');
+    const cell = ws.getCell(cellAddress);
+    writeResolved(cell, rv, null);
   }
 
-  // ── fillScalar: single value from data[0] only ───────────
+  // ── Fill scalar ────────────────────────────────────────
 
+  /**
+   * scalar mapping: reads from the first row of the resolved recordset.
+   * Type is resolved from recordsetMetadata.
+   */
   private fillScalar(
     ws: ExcelJS.Worksheet,
     mapping: ReportMapping,
     data: Record<string, any>[],
-    dateColumns: Set<string>
+    typeMap: Map<string, DetectedDataType>,
+    recordsetIndex: number
   ): void {
     const { fieldName, cellAddress } = mapping;
     if (!cellAddress || data.length === 0) return;
 
-    const normalized = normalizeRows(data);
-    const value = normalized[0]?.[fieldName.toUpperCase()];
-    if (value == null) return;
+    const key = `${recordsetIndex}|${fieldName.toUpperCase()}`;
+    const type = typeMap.get(key) ?? 'text';
+    const rv = convertForExcel(data[0]?.[fieldName.toUpperCase()], type);
 
-    const targetCell = ws.getCell(cellAddress);
-    this.writeCellValue(targetCell, value, dateColumns.has(fieldName.toUpperCase()));
+    const cell = ws.getCell(cellAddress);
+    writeResolved(cell, rv, null);
   }
 
-  // ── fillList: data rows with block-level splice ─────────
+  // ── Fill list block ────────────────────────────────────
 
+  /**
+   * list mapping: writes all rows of a field to a block of rows.
+   *
+   * Block semantics (guaranteed by shared state):
+   *   - `block.rowStart` + `block.rowCount` define the row range for ALL columns.
+   *   - `spliceRows()` is called exactly once — on the first column to hit a new block.
+   *   - Subsequent columns reuse the already-allocated rows — perfectly aligned.
+   *   - If `data.length` differs from `block.rowCount` → warn and cap to `block.rowCount`.
+   */
   private fillList(
     ws: ExcelJS.Worksheet,
     mapping: ReportMapping,
     data: Record<string, any>[],
-    blockStates: Record<string, BlockState>,
-    sheetName: string,
-    dateColumns: Set<string>
+    typeMap: Map<string, DetectedDataType>,
+    recordsetIndex: number,
+    sheetName: string
   ): void {
-    const { fieldName, cellAddress, recordsetIndex } = mapping;
+    const { fieldName, cellAddress } = mapping;
     if (!cellAddress || data.length === 0) return;
 
-    const parsed = parseCellAddress(cellAddress);
+    const parsed = parseCell(cellAddress);
     if (!parsed) return;
 
     const { col, row: startRow } = parsed;
-    const rsIdx = recordsetIndex ?? 0;
-    const fieldKey = fieldName.toUpperCase();
-    const isDateCol = dateColumns.has(fieldKey);
+    const key = `${recordsetIndex}|${fieldName.toUpperCase()}`;
+    const type = typeMap.get(key) ?? 'text';
 
-    // ── Block key
-    const blockKey = makeBlockKey(sheetName, rsIdx, startRow);
+    const bk = blockKey(sheetName, recordsetIndex, startRow);
 
-    // ── Init block state if new
-    if (!blockStates[blockKey]) {
-      blockStates[blockKey] = { spliced: false, colRow: {} };
+    // ── Init block on first column hit
+    if (!this._blocks[bk]) {
+      this._blocks[bk] = {
+        spliced: false,
+        rowStart:   startRow,
+        rowCount:   data.length,
+        templateRow: startRow,
+      };
     }
-    const block = blockStates[blockKey];
+    const b = this._blocks[bk];
 
-    // ── Track row for this column
-    if (block.colRow[col] === undefined) {
-      block.colRow[col] = startRow;
-    }
-
-    // ── Splice rows only on first column that hits this block
-    const thisColRow = block.colRow[col];
-    const rowsNeeded = data.length;
-
-    if (!block.spliced && rowsNeeded > 1) {
-      // Insert (rowsNeeded - 1) blank rows after startRow
-      ws.spliceRows(thisColRow + 1, 0, ...Array(rowsNeeded - 1).fill(null));
-      block.spliced = true;
+    // ── Mismatch guard: warn + cap
+    if (data.length !== b.rowCount) {
+      console.warn(
+        `[Excel] Block "${bk}" col "${col}": ` +
+        `data.length=${data.length} ≠ block.rowCount=${b.rowCount}. ` +
+        `Capping at ${b.rowCount} to maintain alignment.`
+      );
     }
 
-    // ── Template cell for style cloning
-    const templateCell = ws.getCell(`${col}${thisColRow}`);
-    const templateRow = ws.getRow(thisColRow);
+    // ── Allocate rows once
+    if (!b.spliced && b.rowCount > 1) {
+      ws.spliceRows(b.rowStart + 1, 0, ...Array(b.rowCount - 1).fill(null));
+      b.spliced = true;
+    }
 
-    // ── Normalize rows for case-insensitive field lookup
+    // ── Template for style cloning
+    const tmplCell = ws.getCell(`${col}${b.templateRow}`);
+    const tmplRow  = ws.getRow(b.templateRow);
     const normalized = normalizeRows(data);
 
-    // ── Write each row
-    for (let i = 0; i < data.length; i++) {
-      const currentRowNum = thisColRow + i;
-      const val = normalized[i]?.[fieldKey] ?? '';
-      const targetCell = ws.getCell(`${col}${currentRowNum}`);
+    // ── Write each row (capped to block rowCount)
+    for (let i = 0; i < b.rowCount; i++) {
+      const rowNum = b.rowStart + i;
+      const raw = normalized[i]?.[fieldName.toUpperCase()] ?? '';
+      const rv = convertForExcel(raw, type);
+      const cell = ws.getCell(`${col}${rowNum}`);
 
       if (i === 0) {
-        // First row: preserve template style, apply date numFmt if needed
-        this.writeCellValue(targetCell, val, isDateCol);
+        // Template row: preserve existing style + apply numFmt
+        writeResolved(cell, rv, tmplCell);
       } else {
-        // New rows: write value, clone template style, then override numFmt for dates
-        targetCell.value = smartType(val);
-        this.copyCellStyle(templateCell, targetCell);
-        if (isDateCol) {
-          const num = Number(val);
-          const isDateTime = !isNaN(num) && num % 1 !== 0;
-          targetCell.numFmt = isDateTime ? 'dd/MM/yyyy hh:mm:ss' : 'dd/MM/yyyy';
-        }
-        this.copyRowStyle(templateRow, ws.getRow(currentRowNum));
+        // Newly inserted row: apply value + clone template style + numFmt
+        applyCellStyle(cell, tmplCell, rv.numFmt);
+        cell.value = rv.value;
+        copyRowHeight(tmplRow, ws.getRow(rowNum));
       }
     }
-
-    // ── Advance tracker for this column
-    block.colRow[col] = thisColRow + data.length;
   }
 
-  // ── Fill a worksheet from a recordset (no-template fallback) ──
+  // ── No-template fallback (creates a basic sheet) ────────
 
-  private fillSheetFromRecordset(
-    ws: ExcelJS.Worksheet,
-    rows: Record<string, any>[]
-  ): void {
-    if (rows.length === 0) return;
-    const columns = Object.keys(rows[0]);
+  private fillSheetFallback(ws: ExcelJS.Worksheet, rows: Record<string, any>[]): void {
+    if (!rows.length) return;
+    const cols = Object.keys(rows[0]);
 
-    // Header row
-    columns.forEach((col, ci) => {
-      const cell = ws.getCell(1, ci + 1);
-      cell.value = col;
+    // Header
+    cols.forEach((c, i) => {
+      const cell = ws.getCell(1, i + 1);
+      cell.value = c;
       cell.font = { bold: true };
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } };
     });
 
-    // Data rows
+    // Data
     rows.forEach((row, ri) => {
-      columns.forEach((col, ci) => {
-        ws.getCell(ri + 2, ci + 1).value = row[col] ?? '';
+      cols.forEach((c, ci) => {
+        ws.getCell(ri + 2, ci + 1).value = row[c] ?? '';
       });
     });
   }
 
-  // ── Public export ────────────────────────────────────────
+  // ── Public export ──────────────────────────────────────
 
   async exportReport(
     mappings: ReportMapping[],
     templateFile: string | null,
     params: Record<string, any>,
     recordsets: Record<string, any>[][],
-    _outputFileName: string,
-    dateColumns?: string[]
+    _fileName: string,
+    recordsetMetadata?: RecordsetMetadata[]
   ): Promise<Buffer> {
     // Reset per-export state
     this._blocks = {};
 
-    // Build a Set of uppercase date column names for fast lookup
-    const dateColSet = new Set<string>((dateColumns || []).map(c => c.toUpperCase()));
+    // ── Build field type map
+    const typeMap = buildFieldTypeMap(recordsetMetadata ?? []);
 
-    const workbook = new ExcelJS.Workbook();
+    const wb = new ExcelJS.Workbook();
 
     // ── 1. Load template
-    const templatePath = this.resolveTemplatePath(templateFile);
-    if (templatePath) {
-      const buffer = fs.readFileSync(templatePath);
-      // Load directly from buffer (pass ArrayBuffer so ExcelJS accepts it)
-      await workbook.xlsx.load(buffer.buffer as ArrayBuffer);
+    const tmplPath = this.resolveTemplate(templateFile);
+    if (tmplPath) {
+      // Use base64 so ExcelJS decodes internally (avoids Buffer type issues).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const b64 = fs.readFileSync(tmplPath, 'base64');
+      await (wb.xlsx.load as (d: any, o?: any) => Promise<unknown>)(b64, { base64: true });
     } else {
-      // No template: create one sheet per non-empty recordset
       for (let i = 0; i < recordsets.length; i++) {
         const rs = recordsets[i];
-        if (!rs || rs.length === 0) continue;
+        if (!rs?.length) continue;
         const name = i === 0 ? 'Báo cáo' : `Sheet${i + 1}`;
-        const ws = workbook.addWorksheet(name);
-        this.fillSheetFromRecordset(ws, rs);
+        this.fillSheetFallback(wb.addWorksheet(name), rs);
       }
-      // Ensure at least one sheet
-      if (workbook.worksheets.length === 0) {
-        workbook.addWorksheet('Report');
-      }
+      if (!wb.worksheets.length) wb.addWorksheet('Report');
     }
 
-    // ── 2. Build sheet-name → index map
-    const sheetNameToIdx = new Map<string, number>();
-    workbook.worksheets.forEach((ws, i) => sheetNameToIdx.set(ws.name, i));
-
-    // ── 3. Group mappings by type
+    // ── 2. Group mappings
     const paramMappings = mappings.filter(m => m.mappingType === 'param');
     const scalarMappings = mappings.filter(m => m.mappingType === 'scalar');
-    const listMappings = mappings.filter(m => m.mappingType === 'list');
+    const listMappings   = mappings.filter(m => m.mappingType === 'list');
 
-    // ── 4. Fill param mappings (params only, no recordset data)
-    for (const mapping of paramMappings) {
-      if (!isValidMapping(mapping)) continue;
-      const ws = this.getSheet(workbook, mapping.sheetName);
-      this.fillParam(ws, mapping, params, dateColSet);
+    // ── 3. Fill param (params only — no recordset)
+    for (const m of paramMappings) {
+      if (!isValidMapping(m)) continue;
+      const ws = this.resolveSheet(wb, m.sheetName);
+      this.fillParam(ws, m, params);
     }
 
-    // ── 5. Fill scalar mappings (recordset[0] only)
-    for (const mapping of scalarMappings) {
-      if (!isValidMapping(mapping)) continue;
-      const ws = this.getSheet(workbook, mapping.sheetName);
-      const rsIdx = mapping.recordsetIndex ?? 0;
+    // ── 4. Fill scalar (recordset[recordsetIndex], first row only)
+    for (const m of scalarMappings) {
+      if (!isValidMapping(m)) continue;
+      const ws = this.resolveSheet(wb, m.sheetName);
+      const rsIdx = m.recordsetIndex ?? 0;
       const data = resolveRecordset(recordsets, rsIdx);
-      this.fillScalar(ws, mapping, data, dateColSet);
+      this.fillScalar(ws, m, data, typeMap, rsIdx);
     }
 
-    // ── 6. Fill list mappings (with block-level splice coordination)
-    // Sort by starting row ascending — ensures template row is processed first
-    const sortedList = [...listMappings].sort((a, b) => {
-      const aRow = parseInt((a.cellAddress?.match(/\d+/)?.[0]) || '0');
-      const bRow = parseInt((b.cellAddress?.match(/\d+/)?.[0]) || '0');
-      return aRow - bRow;
+    // ── 5. Fill list (block-level: sorted by startRow asc so template row first)
+    const sorted = [...listMappings].sort((a, b) => {
+      const ar = parseInt((a.cellAddress?.match(/\d+/)?.[0]) || '0');
+      const br = parseInt((b.cellAddress?.match(/\d+/)?.[0]) || '0');
+      return ar - br;
     });
 
-    for (const mapping of sortedList) {
-      if (!isValidMapping(mapping)) continue;
-
-      const ws = this.getSheet(workbook, mapping.sheetName);
-      const targetSheetName = ws.name;
-      const rsIdx = mapping.recordsetIndex ?? 0;
+    for (const m of sorted) {
+      if (!isValidMapping(m)) continue;
+      const ws = this.resolveSheet(wb, m.sheetName);
+      const sheetName = ws.name;
+      const rsIdx = m.recordsetIndex ?? 0;
       const data = resolveRecordset(recordsets, rsIdx);
-
-      // Per-sheet block state (keyed by blockKey)
-      const blockKey = makeBlockKey(
-        targetSheetName,
-        rsIdx,
-        parseInt((mapping.cellAddress?.match(/\d+/)?.[0]) || '0')
-      );
-      if (!this._blocks[blockKey]) {
-        this._blocks[blockKey] = { spliced: false, colRow: {} };
-      }
-
-      this.fillList(ws, mapping, data, this._blocks, targetSheetName, dateColSet);
+      this.fillList(ws, m, data, typeMap, rsIdx, sheetName);
     }
 
-    // ── 7. Serialize to buffer
-    const buf = await workbook.xlsx.writeBuffer();
+    // ── 6. Serialize
+    const buf = await wb.xlsx.writeBuffer();
     return Buffer.from(buf);
   }
 }

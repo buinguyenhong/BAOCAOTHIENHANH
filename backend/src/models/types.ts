@@ -275,12 +275,57 @@ export interface SPParameterMetadata {
 // =====================
 // Query Result
 // =====================
+
+/**
+ * Kết quả phân tích kiểu của một field trong một recordset cụ thể.
+ *
+ * Mỗi field chỉ có THẬT SỰ một kiểu, phát hiện bằng cách đọc giá trị thực tế.
+ * Việc format Excel (numFmt) hoàn toàn dựa vào detectedType này.
+ */
+export type DetectedDataType = 'text' | 'number' | 'date' | 'datetime';
+
+export interface FieldMetadata {
+  /** Tên field, viết HOA để lookup ổn định */
+  fieldName: string;
+  /** Kiểu phát hiện từ dữ liệu thực tế — không phải từ schema */
+  detectedType: DetectedDataType;
+}
+
+/**
+ * Metadata cho một recordset cụ thể.
+ * Dùng để export quyết định chính xác kiểu của từng field trong recordset đó.
+ */
+export interface RecordsetMetadata {
+  recordsetIndex: number;
+  /** Danh sách field metadata, thứ tự giống cột đầu tiên của recordset */
+  fields: FieldMetadata[];
+}
+
+/**
+ * QueryResult mới: thay `dateColumns: string[]` bằng `recordsetMetadata: RecordsetMetadata[]`.
+ *
+ * Cách dùng khi export:
+ *   1. Với một mapping (scalar/list), xác định recordsetIndex của nó.
+ *   2. Tìm RecordsetMetadata tương ứng.
+ *   3. Lookup FieldMetadata[fieldName] → detectedType.
+ *   4. detectedType === 'date'     → serial + numFmt: 'dd/MM/yyyy'
+ *      detectedType === 'datetime' → serial + numFmt: 'dd/MM/yyyy HH:mm:ss'
+ *      detectedType === 'number'   → giữ nguyên number
+ *      detectedType === 'text'     → giữ nguyên text
+ *
+ * Backward compat: `dateColumns` vẫn giữ lại trong interface để client cũ không bị break.
+ */
 export interface QueryResult {
   columns: string[];
   rows: Record<string, any>[];
   recordsets?: Record<string, any>[][];
-  /** Các cột có giá trị là Excel serial date (để ExcelJS apply numFmt đúng) */
+  /**
+   * Metadata chi tiết cho TỪNG recordset. Đây là nguồn thật cho export.
+   * @deprecated Dùng recordsetMetadata thay thế.
+   */
   dateColumns?: string[];
+  /** Metadata kiểu dữ liệu theo từng recordset — dùng để resolve format khi export */
+  recordsetMetadata?: RecordsetMetadata[];
 }
 
 // =====================
