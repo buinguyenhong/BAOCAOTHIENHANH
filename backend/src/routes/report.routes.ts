@@ -83,6 +83,9 @@ router.get(
 
       // Normalize toàn bộ query string: @TuNgay, TuNgay, tungay → TUNGAY
       const normalizedQuery = normalizeQueryParams(req.query as Record<string, unknown>);
+      console.log(`[Execute] reportId=${reportId} SP=${report.spName}`);
+      console.log(`[Execute] rawQuery=${JSON.stringify(req.query)}`);
+      console.log(`[Execute] normalizedQuery=${JSON.stringify(normalizedQuery)}`);
 
       // Serialize params theo cấu hình báo cáo (paramType + valueMode)
       const params: Record<string, string> = serializeReportParams(
@@ -90,7 +93,7 @@ router.get(
         normalizedQuery
       );
 
-      console.log(`[Execute] reportId=${reportId} SP=${report.spName} params=${JSON.stringify(params)}`);
+      console.log(`[Execute] serializedParams=${JSON.stringify(params)}`);
 
       const result = await reportService.executeReport(reportId, params);
 

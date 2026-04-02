@@ -212,12 +212,16 @@ export const ReportDesigner: React.FC = () => {
       }
       const res = await systemApi.testRun(formSpName, params);
       if (res.success && res.data) {
+        console.log('[TestRun] received recordsets_count=' + (res.data.recordsets?.length ?? 0)
+          + ' | ' + (res.data.recordsets || []).map((rs: any[], i: number) =>
+            'RS' + i + '=' + rs.length + 'rows cols=' + (rs[0] ? Object.keys(rs[0]).join(',') : '(empty)')).join(' | '));
         const result: TestRunResult = {
           columns: res.data.columns,
           rows: res.data.rows,
           params: res.data.params || [],
           recordsets: res.data.recordsets || [res.data.rows],
         };
+        console.log('[TestRun] setTestRunResult.recordsets=' + result.recordsets.length);
         setTestRunResult(result);
         setSelectedResultSet(0);
 
@@ -552,54 +556,61 @@ export const ReportDesigner: React.FC = () => {
 
           <Button variant="outline" size="sm" onClick={handleTestRun} loading={testRunning} icon={<span>▶️</span>}>Chạy thử</Button>
 
-          {testRunResult && (
-            <div className="ml-auto flex items-center gap-2 text-xs text-emerald-700 font-bold">
-              <span>✅</span>
-              <span>{testRunResult.columns.length} cột · {testRunResult.rows.length} dòng</span>
-              {testRunResult.recordsets.length > 1 && (
-                <select value={selectedResultSet} onChange={e => {
-                  const idx = parseInt(e.target.value);
-                  setSelectedResultSet(idx);
-                  const rs = testRunResult.recordsets[idx] || [];
-                  const cols = rs.length ? Object.keys(rs[0]) : [];
-                  setFormMappings(allResultSetMappings[idx] || []);
-                }} className="ml-2 px-2 py-1 border border-emerald-300 rounded-lg text-xs">
-                  {testRunResult.recordsets.map((_, idx) => (
-                    <option key={idx} value={idx}>Result {idx + 1}</option>
-                  ))}
-                </select>
-              )}
-            </div>
-          )}
+          {testRunResult && (() => {
+            const currentRS = testRunResult.recordsets[selectedResultSet] ?? [];
+            const currentCols = currentRS.length ? Object.keys(currentRS[0]) : [];
+            return (
+              <div className="ml-auto flex items-center gap-2 text-xs text-emerald-700 font-bold">
+                <span>✅</span>
+                <span>{currentCols.length} cột · {currentRS.length} dòng</span>
+                {testRunResult.recordsets.length > 1 && (
+                  <select value={selectedResultSet} onChange={e => {
+                    const idx = parseInt(e.target.value);
+                    setSelectedResultSet(idx);
+                    setFormMappings(allResultSetMappings[idx] || []);
+                  }} className="ml-2 px-2 py-1 border border-emerald-300 rounded-lg text-xs">
+                    {testRunResult.recordsets.map((_, idx) => (
+                      <option key={idx} value={idx}>Result {idx + 1}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            );
+          })()}
           {testRunError && <div className="ml-auto flex items-center gap-2 text-xs text-red-600 font-bold"><span>❌</span><span>{testRunError}</span></div>}
         </div>
 
-        {/* Test run preview */}
-        {testRunResult && (
-          <div className="mb-6 p-5 bg-emerald-50 border border-emerald-200 rounded-2xl overflow-auto">
-            <h4 className="text-sm font-black text-emerald-800 mb-3">📊 Kết quả chạy thử — Result {selectedResultSet + 1}: {testRunResult.rows.length} dòng</h4>
-            <div className="overflow-auto max-h-64">
-              <table className="w-full text-xs">
-                <thead className="sticky top-0 bg-emerald-100">
-                  <tr>
-                    {testRunResult.columns.map(col => (
-                      <th key={col} className="px-3 py-2 text-left font-black text-emerald-800 border border-emerald-200 whitespace-nowrap">{col}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {testRunResult.rows.map((row, i) => (
-                    <tr key={i} className="bg-white border border-emerald-200">
-                      {testRunResult.columns.map(col => (
-                        <td key={col} className="px-3 py-2 text-slate-700 whitespace-nowrap max-w-xs truncate">{String(row[col] ?? '')}</td>
+        {/* Test run preview — BUG FIX: render đúng resultset đang chọn */}
+        {testRunResult && (() => {
+          const currentRS = testRunResult.recordsets[selectedResultSet] ?? [];
+          const currentColumns = currentRS.length ? Object.keys(currentRS[0]) : [];
+          const currentRows = currentRS;
+          return (
+            <div className="mb-6 p-5 bg-emerald-50 border border-emerald-200 rounded-2xl overflow-auto">
+              <h4 className="text-sm font-black text-emerald-800 mb-3">📊 Kết quả chạy thử — Result {selectedResultSet + 1}: {currentRows.length} dòng</h4>
+              <div className="overflow-auto max-h-64">
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 bg-emerald-100">
+                    <tr>
+                      {currentColumns.map(col => (
+                        <th key={col} className="px-3 py-2 text-left font-black text-emerald-800 border border-emerald-200 whitespace-nowrap">{col}</th>
                       ))}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {currentRows.map((row, i) => (
+                      <tr key={i} className="bg-white border border-emerald-200">
+                        {currentColumns.map(col => (
+                          <td key={col} className="px-3 py-2 text-slate-700 whitespace-nowrap max-w-xs truncate">{String(row[col] ?? '')}</td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* ── Tab: Info ── */}
         {activeTab === 'info' && (

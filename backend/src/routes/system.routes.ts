@@ -81,6 +81,8 @@ router.post(
       }
 
       const result = await hospitalService.testRun(spName, params || {});
+      console.log(`[TestRun] spName=${spName} recordsets_count=${result.recordsets?.length ?? 0} | `
+        + result.recordsets?.map((rs, i) => `RS${i}=${rs.length}rows cols=${rs[0] ? Object.keys(rs[0]).join(',') : '(empty)'}`).join(' | '));
       res.json({ success: true, data: result });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });

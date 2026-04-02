@@ -39,7 +39,7 @@ import {
   CellValueResolution,
   EXCEL_EPOCH_MS,
 } from '../models/excel.types.js';
-import { normalizeRows, getNormalizedParam } from '../utils/normalize.js';
+import { normalizeRows, normalizeRow, getNormalizedParam } from '../utils/normalize.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TEMPLATES_DIR = path.join(__dirname, '../../templates');
@@ -436,6 +436,8 @@ export class ExcelExportService {
 
   /**
    * scalar mapping: lấy 1 giá trị từ dòng đầu recordset.
+   * Row phải normalize trước khi lookup vì MSSQL trả mixed-case keys
+   * (vd: BenhAn_Id, TongSoCaNhapVien, NgayVaoVien).
    */
   private fillScalar(
     ws: ExcelJS.Worksheet,
@@ -452,8 +454,13 @@ export class ExcelExportService {
     }
 
     const normalizedField = (mapping.fieldName ?? '').toUpperCase();
-    const raw = data[0]?.[normalizedField];
-    console.log('[Excel] fillScalar ' + mapping.fieldName + '@' + mapping.cellAddress + ' -> raw=' + JSON.stringify(raw) + ' (rowKeys=' + Object.keys(data[0]).join(',') + ')');
+    // BUG FIX: normalize row keys trước lookup — giống fillListBlock
+    const normalizedRow = normalizeRow(data[0]);
+    const raw = normalizedRow[normalizedField];
+    console.log('[Excel] fillScalar ' + mapping.fieldName + '@' + mapping.cellAddress
+      + ' -> raw=' + JSON.stringify(raw)
+      + ' | rowKeys(gốc)=' + Object.keys(data[0]).join(',')
+      + ' | normalizedKey=' + normalizedField);
     const valueType = this.resolveValueType(mapping, fieldTypeMap);
     const resolution = convertForExport(raw, valueType, mapping.formatPattern ?? null);
     writeCell(ws.getCell(mapping.cellAddress), resolution, null);
