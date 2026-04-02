@@ -72,14 +72,6 @@ export const Login: React.FC = () => {
               🔑 Đăng nhập
             </Button>
           </form>
-
-          <div className="mt-6 p-4 bg-slate-50 rounded-2xl border border-slate-100">
-            <p className="text-xs font-bold text-slate-400 uppercase mb-2">Tài khoản mặc định</p>
-            <div className="space-y-1 text-xs text-slate-500 font-medium">
-              <p>👤 <span className="font-bold">admin</span> / Admin@123 <span className="text-purple-600 font-bold">(Quản trị)</span></p>
-              <p>👤 <span className="font-bold">user</span> / User@123 <span className="text-slate-400">(Người dùng)</span></p>
-            </div>
-          </div>
         </div>
 
         <p className="text-center text-xs text-slate-400 mt-6">

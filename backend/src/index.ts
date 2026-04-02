@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
+import os from 'os';
 import { fileURLToPath } from 'url';
 
 import authRoutes from './routes/auth.routes.js';
@@ -9,6 +10,30 @@ import reportRoutes from './routes/report.routes.js';
 import userRoutes from './routes/user.routes.js';
 import systemRoutes from './routes/system.routes.js';
 import { getDb } from './config/database.js';
+
+/**
+ * Lấy địa chỉ IP LAN thực của máy chủ.
+ * Duyệt qua tất cả network interfaces, ưu tiên IPv4 bắt đầu bằng 192.168.
+ */
+function getLocalIp(): string {
+  const interfaces = os.networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    const nets = interfaces[name];
+    if (!nets) continue;
+    for (const iface of nets) {
+      // Ưu tiên IPv4, bỏ qua internal (127.0.0.1)
+      if (iface.family === 'IPv4' && !iface.internal) {
+        // Ưu tiên subnet 192.168.x.x (mạng LAN thường)
+        if (iface.address.startsWith('192.168.')) return iface.address;
+        // Fallback: lấy IPv4 external đầu tiên tìm được
+        return iface.address;
+      }
+    }
+  }
+  return '127.0.0.1';
+}
+
+const LAN_IP = getLocalIp();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -72,7 +97,7 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
 app.listen(Number(PORT), HOST, () => {
   console.log(`\n🚀 HIS Report Server`);
   console.log(`   Local: http://localhost:${PORT}`);
-  console.log(`   LAN:   http://${HOST === '0.0.0.0' ? '192.168.1.150' : HOST}:${PORT}`);
+  console.log(`   LAN:   http://${HOST === '0.0.0.0' ? LAN_IP : HOST}:${PORT}`);
   console.log(`   API:   http://localhost:${PORT}/api`);
   console.log(`   Health: http://localhost:${PORT}/api/health\n`);
 });
