@@ -1,6 +1,6 @@
 # Project Summary — BAOCAOTHIENHANH
 
-> Cập nhật: 2026-04-01 — Refactor deterministic, config-driven export
+> Cập nhật: 2026-04-02 — Production bug fixes, thread-safety, unified permissions
 
 ---
 
@@ -330,4 +330,61 @@ ALTER TABLE ReportMappings ADD COLUMN recordsetIndex INTEGER DEFAULT 0;
 
 ---
 
-*Cập nhật: 2026-04-01*
+## 9. Production Bug Fixes (2026-04-02)
+
+### 9.1. Excel Export — Thread-safety & ListBlock
+
+| Bug | Fix | File |
+|-----|-----|------|
+| `ListBlockManager` là singleton stateful → race-condition khi nhiều export đồng thời | Mỗi `exportReport()` tạo instance riêng `new ListBlockManager()` | `excel-export.ts` |
+| `spliceRows` gọi từ trên xuống (row nhỏ → lớn) → chèn dòng phía trên đẩy offset block phía dưới | Sort list block **DESC** (row lớn trước) → splice từ dưới lên | `excel-export.ts` |
+| `buildFieldTypeMap` nhận `recordsetMetadata` undefined → fallback `[]` → date/datetime mất type | Metadata luôn truyền đầy đủ; fallback chỉ khi field không có trong map | `excel-export.ts` |
+
+### 9.2. Parameter Serialization — Double-serialize & Comma Split
+
+| Bug | Fix | File |
+|-----|-----|------|
+| `serializeParamValue` khi normalized là array → gọi `serializeByParamType(array)` → lấy phần tử `[0]` → date range sai | Serialize **từng element** trong array trước khi vào `serializeByValueMode` | `param-serializer.ts` |
+| `normalizeInputValue` split comma **luôn luôn** → chuỗi địa chỉ "Hà Nội, Việt Nam" bị cắt | Chỉ split khi `paramType === 'multiselect'`; text/textarea giữ nguyên | `param-serializer.ts` |
+
+### 9.3. User Management — Group Wipe Bug
+
+| Bug | Fix | File |
+|-----|-----|------|
+| `PUT /api/users/:id` chỉ cập nhật `fullName` → `reportGroupIds = undefined` → fallback `?? []` → **xóa sạch** nhóm báo cáo | `reportGroupIds !== undefined` mới cập nhật; `updateUserFull()` signature đổi thành `string[] \| undefined` | `user.routes.ts`, `auth.service.ts` |
+
+### 9.4. Permission System — Unified Check
+
+| Bug | Fix | File |
+|-----|-----|------|
+| User có nhóm nhưng không có `ReportPermissions` record → `checkPermission` trả `{canView:false}` → **bị chặn** | `checkFullPermission()` kết hợp 2 tầng: ReportPermissions → UserReportGroupPermissions fallback | `permission.middleware.ts` |
+
+### 9.5. Disk Cleanup
+
+| Bug | Fix | File |
+|-----|-----|------|
+| `deleteReport()` không xóa template file trong `templates/{reportId}/` | Xóa thư mục template trước khi xóa DB record | `auth.service.ts` |
+
+### 9.6. Timezone Consistency
+
+| Bug | Fix | File |
+|-----|-----|------|
+| `serializeDateValue` / `serializeDateTimeValue` dùng `getFullYear/getMonth/getDate` → lệch ±7 tiếng khi server VN (UTC+7) → ngày sai | Dùng `getUTCFullYear/getUTCMonth/getUTCDate` → đảm bảo ngày gửi vào SP đúng | `param-serializer.ts` |
+| `parseDateString` parse `'2024-01-15'` bằng `new Date()` → có thể ra serial của ngày 14 do UTC shift | Parse thủ công `YYYY-MM-DD` → `new Date(y, m-1, d, 0, 0, 0, 0)` (local time) | `excel-export.ts` |
+
+### 9.7. Shared Utility — checkActionPermission
+
+| Thay đổi | File |
+|----------|------|
+| Extract `checkActionPermission()` từ `report.routes.ts` và `user.routes.ts` thành utility dùng chung | `utils/permissions.ts` (mới) |
+
+### 9.8. Infrastructure
+
+| Thay đổi | File |
+|----------|------|
+| IP LAN tự động detect bằng `os.networkInterfaces()` — ưu tiên `192.168.x.x` | `index.ts` |
+| Bỏ hint tài khoản mặc định khỏi màn hình login (bảo mật) | `frontend/src/pages/Login.tsx` |
+
+---
+
+*Cập nhật: 2026-04-02*
