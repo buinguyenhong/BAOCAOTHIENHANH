@@ -1,6 +1,5 @@
 import { Router, Request, Response } from 'express';
 import { reportService } from '../services/report.service.js';
-import { authService } from '../services/auth.service.js';
 import { excelExportService } from '../services/excel-export.js';
 import { auditService } from '../services/audit.service.js';
 import { authMiddleware, adminMiddleware } from '../middleware/auth.middleware.js';
@@ -8,19 +7,9 @@ import { AuthRequest } from '../middleware/auth.middleware.js';
 import { checkReportView, checkReportExport } from '../middleware/permission.middleware.js';
 import { normalizeQueryParams } from '../utils/normalize.js';
 import { serializeReportParams } from '../services/param-serializer.js';
+import { checkActionPermission } from '../utils/permissions.js';
 
 const router = Router();
-
-// Helper: kiểm tra action permission cho current user
-async function checkActionPermission(
-  req: AuthRequest,
-  action: 'canCreateReport' | 'canEditReport' | 'canDeleteReport' | 'canCreateGroup' | 'canEditGroup' | 'canDeleteGroup'
-): Promise<boolean> {
-  const userId = req.user!.userId;
-  const role = req.user!.role;
-  const perms = await authService.getUserActionPermissions(userId, role);
-  return perms[action];
-}
 
 // =====================
 // USER ROUTES (/api/user/reports)

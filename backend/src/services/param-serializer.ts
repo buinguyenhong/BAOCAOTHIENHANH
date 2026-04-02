@@ -24,17 +24,22 @@ import { normalizeParamName } from '../utils/normalize.js';
 // ─────────────────────────────────────────────
 
 /**
- * Serialize Date object hoặc string → chuỗi định dạng YYYY-MM-DD.
- * Dùng chuẩn để gửi vào MSSQL stored procedure.
+ * Serialize Date object hoặc string → chuỗi định dạng YYYY-MM-DD (UTC).
+ *
+ * FIX Timezone: Luôn dùng UTC methods để tránh lệch 0.7 ngày.
+ * Server bệnh viện chạy local time (VN = UTC+7).
+ * VD: '2024-01-01' parse as local → getDate() có thể trả về '2023-12-31'
+ * khi input là '2024-01-01T00:00:00Z'. Dùng UTC methods đảm bảo
+ * ngày gửi vào SP luôn đúng với ngày thực tế.
  */
 export function serializeDateValue(value: unknown): string {
   if (!value) return '';
 
   // Date object
   if (value instanceof Date && !isNaN(value.getTime())) {
-    const y = value.getFullYear();
-    const m = String(value.getMonth() + 1).padStart(2, '0');
-    const d = String(value.getDate()).padStart(2, '0');
+    const y = value.getUTCFullYear();
+    const m = String(value.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(value.getUTCDate()).padStart(2, '0');
     return `${y}-${m}-${d}`;
   }
 
@@ -44,9 +49,9 @@ export function serializeDateValue(value: unknown): string {
 
   const parsed = new Date(s);
   if (!isNaN(parsed.getTime())) {
-    const y = parsed.getFullYear();
-    const m = String(parsed.getMonth() + 1).padStart(2, '0');
-    const d = String(parsed.getDate()).padStart(2, '0');
+    const y = parsed.getUTCFullYear();
+    const m = String(parsed.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(parsed.getUTCDate()).padStart(2, '0');
     return `${y}-${m}-${d}`;
   }
 
@@ -55,18 +60,21 @@ export function serializeDateValue(value: unknown): string {
 }
 
 /**
- * Serialize DateTime object hoặc string → chuỗi định dạng YYYY-MM-DD HH:mm:ss.
+ * Serialize DateTime object hoặc string → chuỗi định dạng YYYY-MM-DD HH:mm:ss (UTC).
+ *
+ * FIX Timezone: Dùng UTC methods tương tự serializeDateValue.
+ * Đảm bảo giờ server bệnh viện không bị lệch ±7 tiếng so với input.
  */
 export function serializeDateTimeValue(value: unknown): string {
   if (!value) return '';
 
   if (value instanceof Date && !isNaN(value.getTime())) {
-    const y = value.getFullYear();
-    const m = String(value.getMonth() + 1).padStart(2, '0');
-    const d = String(value.getDate()).padStart(2, '0');
-    const hh = String(value.getHours()).padStart(2, '0');
-    const mm = String(value.getMinutes()).padStart(2, '0');
-    const ss = String(value.getSeconds()).padStart(2, '0');
+    const y = value.getUTCFullYear();
+    const m = String(value.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(value.getUTCDate()).padStart(2, '0');
+    const hh = String(value.getUTCHours()).padStart(2, '0');
+    const mm = String(value.getUTCMinutes()).padStart(2, '0');
+    const ss = String(value.getUTCSeconds()).padStart(2, '0');
     return `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
   }
 
@@ -75,12 +83,12 @@ export function serializeDateTimeValue(value: unknown): string {
 
   const parsed = new Date(s);
   if (!isNaN(parsed.getTime())) {
-    const y = parsed.getFullYear();
-    const m = String(parsed.getMonth() + 1).padStart(2, '0');
-    const d = String(parsed.getDate()).padStart(2, '0');
-    const hh = String(parsed.getHours()).padStart(2, '0');
-    const mm = String(parsed.getMinutes()).padStart(2, '0');
-    const ss = String(parsed.getSeconds()).padStart(2, '0');
+    const y = parsed.getUTCFullYear();
+    const m = String(parsed.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(parsed.getUTCDate()).padStart(2, '0');
+    const hh = String(parsed.getUTCHours()).padStart(2, '0');
+    const mm = String(parsed.getUTCMinutes()).padStart(2, '0');
+    const ss = String(parsed.getUTCSeconds()).padStart(2, '0');
     return `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
   }
 
@@ -93,6 +101,14 @@ export function serializeDateTimeValue(value: unknown): string {
 
 /**
  * Normalize user input value về string/array phù hợp với cấu hình param.
+ *
+ * FIX: Chỉ split khi paramType === 'multiselect' HOẶC input là array.
+ * Tránh làm hỏng chuỗi có dấu phẩy (VD: địa chỉ "Hà Nội, Việt Nam").
+ *
+ * - Array từ frontend (multi-select) → luôn split → string[]
+ * - 'multiselect' param string → split comma → string[]
+ * - 'text'/'textarea' param string → GIỮ NGUYÊN, không split
+ * - single value → string
  */
 function normalizeInputValue(
   rawValue: unknown,
@@ -107,9 +123,13 @@ function normalizeInputValue(
     return rawValue.map(v => String(v).trim()).filter(Boolean);
   }
 
-  // String có chứa dấu phẩy → có thể là CSV
+  // FIX: Chỉ split comma khi là multiselect param.
+  // 'text'/'textarea' giữ nguyên string dù có dấu phẩy.
   if (typeof rawValue === 'string' && rawValue.includes(',')) {
-    return rawValue.split(',').map(v => v.trim()).filter(Boolean);
+    if (paramType === 'multiselect') {
+      return rawValue.split(',').map(v => v.trim()).filter(Boolean);
+    }
+    // Non-multiselect: giữ nguyên string
   }
 
   // Single value
@@ -223,14 +243,18 @@ export function serializeParamValue(
     return '';
   }
 
-  // Serialize by paramType
-  const byType = serializeByParamType(normalized, param.paramType);
+  // FIX Double-serialize: Nếu normalized là array, serialize TỪNG PHẦN TỬ
+  // theo paramType TRƯỚC KHI đưa vào serializeByValueMode.
+  // Trước đây: normalized=['2024-01-01','2024-01-31'] → byType='2024-01-01' (sai!)
+  // Bây giờ:   normalized=['2024-01-01','2024-01-31'] → ['2024-01-01','2024-01-31'] đúng
+  if (Array.isArray(normalized)) {
+    const serialized = normalized.map(el => serializeByParamType(el, param.paramType));
+    return serializeByValueMode(serialized, param.valueMode ?? 'single');
+  }
 
-  // Serialize by valueMode
-  return serializeByValueMode(
-    Array.isArray(normalized) ? normalized : byType,
-    param.valueMode ?? 'single'
-  );
+  // Scalar case: serialize theo paramType
+  const byType = serializeByParamType(normalized, param.paramType);
+  return serializeByValueMode(byType, param.valueMode ?? 'single');
 }
 
 /**

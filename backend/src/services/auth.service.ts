@@ -367,19 +367,26 @@ export class AuthService {
 
   /**
    * Cập nhật user đầy đủ.
+   *
+   * FIX: Chỉ cập nhật nhóm báo cáo khi reportGroupIds !== undefined.
+   * Khi user chỉ cập nhật thông tin cá nhân (không gửi reportGroupIds),
+   * nhóm báo cáo hiện tại được giữ nguyên.
    */
   async updateUserFull(
     userId: string,
     userDto: { fullName?: string; role?: string; isActive?: boolean; password?: string },
     permissionsDto: SetUserPermissionsDto | null,
-    reportGroupIds: string[]
+    reportGroupIds: string[] | undefined
   ): Promise<UserWithPermissions | null> {
     const user = await this.updateUser(userId, userDto);
     if (!user) return null;
     if (permissionsDto !== null) {
       await this.setUserPermissions(userId, permissionsDto);
     }
-    await this.setUserReportGroups(userId, { reportGroupIds });
+    // Chỉ cập nhật nhóm khi được truyền (không phải undefined)
+    if (reportGroupIds !== undefined) {
+      await this.setUserReportGroups(userId, { reportGroupIds });
+    }
     return this.getUserWithPermissions(userId);
   }
 }
@@ -494,6 +501,25 @@ export class ReportService {
   }
 
   async deleteReport(id: string): Promise<boolean> {
+    // FIX: Xóa template file trong templates/{reportId}/ trước khi xóa report.
+    // Nếu không xóa → file rác tích tụ trong thư mục templates.
+    // Xóa cả thư mục reportId vì chỉ report này dùng nó.
+    const report = configDb<{ templateFile: string | null }>(
+      'SELECT templateFile FROM Reports WHERE id = $id',
+      { id }
+    );
+    if (report.length > 0 && report[0].templateFile) {
+      try {
+        const templateDir = path.join(__dirname, '../../templates', id);
+        if (fs.existsSync(templateDir)) {
+          fs.rmSync(templateDir, { recursive: true, force: true });
+          console.log(`[ReportService] Deleted template dir: ${templateDir}`);
+        }
+      } catch (err) {
+        console.warn(`[ReportService] Failed to delete template dir for report ${id}:`, err);
+      }
+    }
+
     configExec('DELETE FROM Reports WHERE id = $id', { id });
     return true;
   }

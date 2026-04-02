@@ -4,19 +4,9 @@ import { reportService } from '../services/report.service.js';
 import { auditService } from '../services/audit.service.js';
 import { authMiddleware, adminMiddleware } from '../middleware/auth.middleware.js';
 import { AuthRequest } from '../middleware/auth.middleware.js';
+import { checkActionPermission } from '../utils/permissions.js';
 
 const router = Router();
-
-// Helper: check action permission for current user
-async function checkActionPermission(
-  req: AuthRequest,
-  action: 'canCreateReport' | 'canEditReport' | 'canDeleteReport' | 'canCreateGroup' | 'canEditGroup' | 'canDeleteGroup'
-): Promise<boolean> {
-  const userId = req.user!.userId;
-  const role = req.user!.role;
-  const perms = await authService.getUserActionPermissions(userId, role);
-  return perms[action];
-}
 
 // ─── User CRUD ─────────────────────────────────────────────────
 
@@ -123,11 +113,20 @@ router.put(
 
       const { fullName, role, isActive, password, permissions, reportGroupIds } = req.body;
 
-      // permissions: null = giữ nguyên, object = update
+      // permissions: null/undefined = giữ nguyên, object = update
       const permissionsDto: any = permissions !== undefined ? permissions : null;
-      const groupIds = permissions !== undefined
-        ? (Array.isArray(reportGroupIds) ? reportGroupIds : [])
-        : undefined; // undefined = giữ nguyên
+
+      // FIX: Chỉ cập nhật nhóm khi reportGroupIds thực sự được gửi lên.
+      // Khi chỉ cập nhật thông tin cá nhân (fullName/role/isActive),
+      // reportGroupIds sẽ là undefined → setUserReportGroups bị bỏ qua,
+      // tránh xóa sạch nhóm báo cáo do fallback groupIds ?? [].
+      //
+      // - reportGroupIds được gửi (kể cả []): update nhóm = giá trị đó
+      // - reportGroupIds không được gửi (undefined): giữ nguyên nhóm
+      const groupIds: string[] | undefined =
+        reportGroupIds !== undefined
+          ? (Array.isArray(reportGroupIds) ? reportGroupIds : [])
+          : undefined;
 
       const result = await authService.updateUserFull(
         userId,

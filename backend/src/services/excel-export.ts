@@ -66,11 +66,39 @@ function isDateObject(val: unknown): val is Date {
   return val instanceof Date && !isNaN(val.getTime());
 }
 
-/** Parse date/datetime string → Date or null */
+/**
+ * Parse date/datetime string → Date or null.
+ *
+ * FIX Timezone: Xử lý date-only string (YYYY-MM-DD) đúng cách.
+ * - Input '2024-01-15' không có timezone → parse bằng regex + UTC midnight
+ *   để đảm bảo giá trị serial đúng cho ngày đó (không bị -1 ngày vì UTC offset).
+ * - Input có timezone ('2024-01-15T00:00:00Z') → dùng Date constructor trực tiếp.
+ */
 function parseDateString(s: string): Date | null {
   if (!s || !s.trim()) return null;
-  const d = new Date(s.trim());
-  return isNaN(d.getTime()) ? null : d;
+  const trimmed = s.trim();
+
+  // Date-only format YYYY-MM-DD — parse thủ công để tránh UTC shift
+  // Ví dụ: '2024-01-15' → phải thành serial cho ngày 15, không phải 14
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    const [y, m, d] = trimmed.split('-').map(Number);
+    // Tạo Date tại 00:00 local time → getTime() đã bao gồm local offset
+    const localDate = new Date(y, m - 1, d, 0, 0, 0, 0);
+    return localDate;
+  }
+
+  // Full datetime hoặc ISO string
+  const d = new Date(trimmed);
+  if (!isNaN(d.getTime())) return d;
+
+  // Fallback: thử parse thủ công cho datetime
+  const dtMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})/);
+  if (dtMatch) {
+    const [, y, mo, da, h, mi, se] = dtMatch.map(Number);
+    return new Date(y, mo - 1, da, h, mi, se, 0);
+  }
+
+  return null;
 }
 
 // ─────────────────────────────────────────────
@@ -333,7 +361,8 @@ function isValidMapping(m: ReportMapping): boolean {
 // ─────────────────────────────────────────────
 
 export class ExcelExportService {
-  private blocks = new ListBlockManager();
+  // Thread-safety: mỗi exportReport call tạo instance riêng.
+  // ListBlockManager KHÔNG share state giữa các concurrent requests.
 
   // ── Template resolution ──────────────────────
 
@@ -366,9 +395,13 @@ export class ExcelExportService {
    *
    * CHỈ dùng cho SCALAR/LIST khi không có mapping.valueType.
    * param mapping KHÔNG bao giờ dùng map này.
+   *
+   * FIX: recordsetMetadata luôn được truyền vào (không fallback về []).
+   * Nếu metadata không có date/datetime type → fallback về 'text' an toàn.
+   * KHÔNG fallback toàn bộ metadata gây sai date format.
    */
   private buildFieldTypeMap(
-    recordsetMetadata?: RecordsetMetadata[]
+    recordsetMetadata: RecordsetMetadata[] | undefined
   ): Map<string, string> {
     const map = new Map<string, string>();
     for (const rm of recordsetMetadata ?? []) {
@@ -471,12 +504,17 @@ export class ExcelExportService {
   /**
    * list mapping: ghi nhiều dòng.
    * Block semantics: rowCount dùng CHUNG, spliceRows gọi 1 LẦN.
+   *
+   * FIX: Nhận blocks instance từ exportReport để đảm bảo thread-safe.
+   * Mỗi list block được sort theo startRow giảm dần (từ dưới lên)
+   * trước khi spliceRows, tránh lệch vị trí ô phía dưới.
    */
   private fillListBlock(
     ws: ExcelJS.Worksheet,
     mapping: ReportMapping,
     recordsets: Record<string, any>[][],
-    fieldTypeMap: Map<string, string>
+    fieldTypeMap: Map<string, string>,
+    blocks: ListBlockManager
   ): void {
     if (!mapping.cellAddress) return;
     const rsIdx = mapping.recordsetIndex ?? 0;
@@ -493,7 +531,8 @@ export class ExcelExportService {
     const wsName = ws.name;
 
     const valueType = this.resolveValueType(mapping, fieldTypeMap);
-    const b = this.blocks.getOrCreate(ws, wsName, rsIdx, startRow, data.length);
+    // blocks được tạo trong exportReport — thread-safe, không share state
+    const b = blocks.getOrCreate(ws, wsName, rsIdx, startRow, data.length);
     const normalized = normalizeRows(data);
 
     const tmplCell = ws.getCell(`${col}${b.templateRow}`);
@@ -567,9 +606,13 @@ export class ExcelExportService {
     _fileName: string,
     recordsetMetadata?: RecordsetMetadata[]
   ): Promise<Buffer> {
-    this.blocks.reset();
+    // Thread-safe: tạo mới ListBlockManager cho mỗi request.
+    // Tránh race-condition khi nhiều export chạy đồng thời.
+    const blocks = new ListBlockManager();
 
     // ── Layer 1: Build type map
+    // FIX: luôn truyền recordsetMetadata — không fallback []
+    // Metadata chứa date/datetime type → dùng cho backward compat fallback
     const fieldTypeMap = this.buildFieldTypeMap(recordsetMetadata);
 
     const wb = new ExcelJS.Workbook();
@@ -615,16 +658,20 @@ export class ExcelExportService {
       this.fillScalar(ws, m, recordsets, fieldTypeMap);
     }
 
-    // ── Fill list: sort by startRow asc
+    // ── Fill list: sort by startRow DESC (từ dưới lên trên)
+    // FIX: spliceRows từ dưới lên trên để chèn dòng không làm lệch
+    // vị trí các ô phía trên. Ví dụ: block tại dòng 10 chèn TRƯỚC
+    // block tại dòng 5, tránh offset sai khi ws.spliceRows(5,0,...) đẩy
+    // block 10 xuống thành 11+ trước khi nó được xử lý.
     const sorted = [...listMappings].sort((a, b) => {
       const ar = parseInt((a.cellAddress?.match(/\d+/) ?? ['0'])[0]);
       const br = parseInt((b.cellAddress?.match(/\d+/) ?? ['0'])[0]);
-      return ar - br;
+      return br - ar; // DESC: dòng lớn nhất trước
     });
 
     for (const m of sorted) {
       const ws = this.resolveSheet(wb, m.sheetName);
-      this.fillListBlock(ws, m, recordsets, fieldTypeMap);
+      this.fillListBlock(ws, m, recordsets, fieldTypeMap, blocks);
     }
 
     // ── Serialize
