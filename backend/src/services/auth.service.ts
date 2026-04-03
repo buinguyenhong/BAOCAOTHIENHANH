@@ -429,10 +429,34 @@ export class ReportService {
     if (role === 'admin') {
       reports = configDb<Report>('SELECT * FROM Reports ORDER BY groupName, name');
     } else {
+      // Tier 1: explicit per-report permission (canView = 1)
+      // Tier 2: user belongs to the report's group (also handles NULL reportGroupId
+      //           → if user has ANY group permission, show those reports too)
       reports = configDb<Report>(
         `SELECT DISTINCT r.* FROM Reports r
-         INNER JOIN UserReportGroupPermissions urgp ON r.reportGroupId = urgp.reportGroupId
-         WHERE urgp.userId = $userId
+         WHERE (
+           EXISTS (
+             SELECT 1 FROM ReportPermissions rp
+             WHERE rp.reportId = r.id
+               AND rp.userId = $userId
+               AND rp.canView = 1
+           )
+           OR (
+             r.reportGroupId IS NOT NULL
+             AND EXISTS (
+               SELECT 1 FROM UserReportGroupPermissions urgp
+               WHERE urgp.reportGroupId = r.reportGroupId
+                 AND urgp.userId = $userId
+             )
+           )
+           OR (
+             r.reportGroupId IS NULL
+             AND EXISTS (
+               SELECT 1 FROM UserReportGroupPermissions urgp2
+               WHERE urgp2.userId = $userId
+             )
+           )
+         )
          ORDER BY r.groupName, r.name`,
         { userId }
       );
@@ -445,8 +469,8 @@ export class ReportService {
   }
 
   async checkPermission(userId: string, reportId: string, role: string): Promise<{
-    canView: boolean;
-    canExport: boolean;
+    canView: boolean | undefined;
+    canExport: boolean | undefined;
   }> {
     if (role === 'admin') return { canView: true, canExport: true };
 
@@ -454,24 +478,37 @@ export class ReportService {
       'SELECT canView, canExport FROM ReportPermissions WHERE userId = $userId AND reportId = $reportId',
       { userId, reportId }
     );
-    if (perms.length === 0) return { canView: false, canExport: false };
+    // Trả undefined khi không có record → middleware sẽ kiểm tra Tier 2 (UserReportGroupPermissions)
+    if (perms.length === 0) return { canView: undefined, canExport: undefined };
     return { canView: !!perms[0].canView, canExport: !!perms[0].canExport };
   }
 
   async createReport(dto: CreateReportDto, createdBy: string): Promise<Report> {
     const id = uuidv4();
+
+    // Resolve group info from reportGroupId if provided
+    let groupName = dto.groupName || 'Tổng hợp';
+    let groupIcon = dto.groupIcon || '📂';
+    if (dto.reportGroupId) {
+      const group = authService.getReportGroupById(dto.reportGroupId) as any;
+      if (group) {
+        groupName = group.name;
+        groupIcon = group.icon;
+      }
+    }
+
     configExec(
       `INSERT INTO Reports (id, name, groupName, groupIcon, spName, description, templateFile, reportGroupId, createdBy)
        VALUES ($id, $name, $groupName, $groupIcon, $spName, $description, $templateFile, $reportGroupId, $createdBy)`,
       {
         id,
         name: dto.name,
-        groupName: dto.groupName || 'Tổng hợp',
-        groupIcon: dto.groupIcon || '📂',
+        groupName,
+        groupIcon,
         spName: dto.spName,
         description: dto.description || null,
         templateFile: dto.templateFile || null,
-        reportGroupId: (dto as any).reportGroupId || null,
+        reportGroupId: dto.reportGroupId || null,
         createdBy,
       }
     );

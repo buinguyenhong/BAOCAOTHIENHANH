@@ -61,6 +61,11 @@ router.get(
           configDB: results['ConfigDB'],
           hospitalDB: results['HospitalDB'],
           hospitalConfigured: !!hospitalConfig,
+          // Trả về config hiện tại (không có password)
+          hospitalServer: hospitalConfig?.server ?? '',
+          hospitalDatabase: hospitalConfig?.database ?? '',
+          hospitalUser: hospitalConfig?.user ?? '',
+          queryTimeout: hospitalConfig?.queryTimeout ?? 30,
         },
       });
     } catch (err: any) {
@@ -97,7 +102,7 @@ router.post(
   adminMiddleware,
   async (req: AuthRequest, res: Response) => {
     try {
-      const { server, database, user, password } = req.body;
+      const { server, database, user, password, queryTimeout } = req.body;
 
       if (!server || !database || !user) {
         return res.status(400).json({
@@ -107,7 +112,7 @@ router.post(
       }
 
       // Test connection trước khi lưu
-      const testConfig = {
+      const testConfig: import('../config/database.js').HospitalDbConfig = {
         server,
         database,
         user,
@@ -116,6 +121,7 @@ router.post(
           encrypt: false,
           trustServerCertificate: true,
         },
+        queryTimeout: queryTimeout ? Number(queryTimeout) : undefined,
       };
 
       // Lưu config trước (sẽ test connection sau)

@@ -62,15 +62,22 @@ async function checkFullPermission(
   if (reportPerm[action] === false) return false;
 
   // Tầng 2: Không có ReportPermissions → fallback vào UserReportGroupPermissions
-  // Lấy danh sách nhóm của user
   const { authService } = await import('../services/auth.service.js');
   const userGroups = await authService.getUserReportGroupIds(userId);
 
-  // User có ít nhất 1 nhóm → được phép xem báo cáo trong nhóm đó
-  if (userGroups.length > 0) return true;
+  if (userGroups.length === 0) return false;
 
-  // Không có nhóm và không có ReportPermissions → từ chối
-  return false;
+  // Lấy report để kiểm tra reportGroupId
+  const report = reportService.getReportById(reportId);
+  if (!report) return false;
+
+  // Report có nhóm → user phải thuộc nhóm đó
+  if ((report as any).reportGroupId) {
+    return userGroups.includes((report as any).reportGroupId);
+  }
+
+  // Report không có nhóm (NULL) → user có NHÓM nào thì được xem
+  return true;
 }
 
 // ─────────────────────────────────────────────

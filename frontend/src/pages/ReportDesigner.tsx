@@ -1,16 +1,16 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import Select2 from 'react-select';
 import { useNavigate } from 'react-router-dom';
 import { Header } from '../components/Header';
 import { Sidebar } from '../components/Sidebar';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
-import { Select } from '../components/ui/Select';
 import { Modal } from '../components/ui/Modal';
 import { EmptyState } from '../components/ui/Card';
 import { useToast } from '../contexts/ToastContext';
 import { adminReportApi, systemApi } from '../api/report.api';
 import type {
-  Report, ReportGroupView, SPMetadata,
+  Report, ReportGroupView, ReportGroup, SPMetadata,
   CreateReportDto, CreateParamDto, CreateMappingDto,
   ReportParameter, ReportMapping, TestRunResult,
   ParamType, ValueMode, OptionsSourceType,
@@ -53,14 +53,10 @@ export const ReportDesigner: React.FC = () => {
   // State
   const [reports, setReports] = useState<Report[]>([]);
   const [groups, setGroups] = useState<ReportGroupView[]>([]);
+  const [allGroups, setAllGroups] = useState<ReportGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [spList, setSpList] = useState<string[]>([]);
-  const [spSearch, setSpSearch] = useState('');
   const [spLoading, setSpLoading] = useState(false);
-
-  const spFiltered = spList.filter(sp =>
-    sp.toLowerCase().includes(spSearch.toLowerCase())
-  );
 
   // Form state
   const [showForm, setShowForm] = useState(false);
@@ -87,17 +83,22 @@ export const ReportDesigner: React.FC = () => {
 
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [formReportGroupId, setFormReportGroupId] = useState<string>('');
 
   // ── Fetch ──────────────────────────────────────────
 
   const fetchReports = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await adminReportApi.getAllReports();
-      if (res.success && res.data) {
-        setReports(res.data);
+      const [reportsRes, groupsRes] = await Promise.all([
+        adminReportApi.getAllReports(),
+        adminReportApi.getReportGroups(),
+      ]);
+      if (reportsRes.success && reportsRes.data) {
+        setReports(reportsRes.data);
+        // Build group views from report data (for sidebar listing)
         const map = new Map<string, Report[]>();
-        res.data.forEach((r) => {
+        reportsRes.data.forEach((r) => {
           const key = r.groupName || 'Khác';
           if (!map.has(key)) map.set(key, []);
           map.get(key)!.push(r);
@@ -110,6 +111,10 @@ export const ReportDesigner: React.FC = () => {
             reports: rpts,
           }))
         );
+      }
+      // allGroups = danh sách nhóm thực từ DB (cho form dropdown)
+      if (groupsRes.success && groupsRes.data) {
+        setAllGroups(groupsRes.data);
       }
     } catch (err: any) { showError(err.message); }
     finally { setLoading(false); }
@@ -260,8 +265,8 @@ export const ReportDesigner: React.FC = () => {
 
   const openNewForm = () => {
     setEditingReport(null);
-    setFormName(''); setFormGroup('Tổng hợp'); setFormIcon('📂');
-    setFormSpName(''); setFormDesc(''); setSpSearch('');
+    setFormName(''); setFormGroup(''); setFormIcon('📂'); setFormReportGroupId('');
+    setFormSpName(''); setFormDesc('');
     setFormParams([]); setFormMappings([]); setAllResultSetMappings({});
     setSpMetadata(null); setFormTemplateFile(''); setTemplatePreview('');
     setTestRunResult(null); setTestRunError('');
@@ -274,7 +279,8 @@ export const ReportDesigner: React.FC = () => {
     setFormName(report.name);
     setFormGroup(report.groupName || 'Tổng hợp');
     setFormIcon(report.groupIcon || '📂');
-    setFormSpName(report.spName); setSpSearch('');
+    setFormReportGroupId((report as any).reportGroupId || '');
+    setFormSpName(report.spName);
     setFormDesc(report.description || '');
     setFormTemplateFile(report.templateFile || '');
 
@@ -345,6 +351,7 @@ export const ReportDesigner: React.FC = () => {
       const payload: any = {
         name: formName, groupName: formGroup, groupIcon: formIcon,
         spName: formSpName, description: formDesc,
+        reportGroupId: formReportGroupId || null,
         parameters: formParams.filter(p => p.paramName),
         mappings: Object.values(allResultSetMappings).flat().filter(m => m.fieldName),
       };
@@ -525,47 +532,13 @@ export const ReportDesigner: React.FC = () => {
           ))}
         </div>
 
-        {/* Auto-detect + Test run toolbar */}
-        <div className="flex items-center gap-3 mb-6 p-4 bg-amber-50 border border-amber-200 rounded-2xl">
-          <Button variant="outline" size="sm" loading={spLoading} onClick={async () => {
-            if (!formSpName) { showError('Chọn Stored Procedure trước'); return; }
-            setSpLoading(true);
-            try {
-              const res = await systemApi.getSPMetadata(formSpName);
-              if (res.success && res.data) {
-                setSpMetadata(res.data);
-                if (!editingReport || editingReport.spName !== formSpName) {
-                  const autoParams: CreateParamDto[] = (res.data.parameters || []).map((p, idx) => ({
-                    paramName: p.name, paramLabel: p.name.replace(/^@/, '').replace(/([A-Z])/g, ' $1').trim(),
-                    paramType: inferParamType(p.type || '', p.name),
-                    sqlType: p.type || null,
-                    maxLength: p.maxLength ?? null, precision: p.precision ?? null, scale: p.scale ?? null,
-                    isNullable: p.isNullable ?? true, hasDefaultValue: false,
-                    valueMode: 'single', optionsSourceType: 'none', options: null, optionsQuery: null, placeholder: null,
-                    defaultValue: null, isRequired: !p.hasDefaultValue && !p.isNullable, displayOrder: idx + 1,
-                  }));
-                  const autoMappings: CreateMappingDto[] = (res.data.columns || []).map((col, idx) => ({
-                    fieldName: col.name, cellAddress: `A${10 + idx}`, mappingType: 'list' as const,
-                    displayOrder: idx + 1, sheetName: availableSheets[0] || undefined,
-                    recordsetIndex: 0, valueType: 'text' as const, formatPattern: null,
-                  }));
-                  setFormParams(autoParams);
-                  setFormMappings(autoMappings);
-                  setAllResultSetMappings({ 0: autoMappings });
-                  success('Đã tự động nhận diện!');
-                }
-              }
-            } catch { showError('Không lấy được metadata SP'); }
-            finally { setSpLoading(false); }
-          }} icon={<span>🔍</span>}>Auto-detect</Button>
-
-          <Button variant="outline" size="sm" onClick={handleTestRun} loading={testRunning} icon={<span>▶️</span>}>Chạy thử</Button>
-
+        {/* Test run result status bar */}
+        <div className="flex items-center gap-3 mb-6 p-3 bg-amber-50 border border-amber-200 rounded-2xl min-h-[48px]">
           {testRunResult && (() => {
             const currentRS = testRunResult.recordsets[selectedResultSet] ?? [];
             const currentCols = currentRS.length ? Object.keys(currentRS[0]) : [];
             return (
-              <div className="ml-auto flex items-center gap-2 text-xs text-emerald-700 font-bold">
+              <div className="flex items-center gap-2 text-xs text-emerald-700 font-bold">
                 <span>✅</span>
                 <span>{currentCols.length} cột · {currentRS.length} dòng</span>
                 {testRunResult.recordsets.length > 1 && (
@@ -582,7 +555,7 @@ export const ReportDesigner: React.FC = () => {
               </div>
             );
           })()}
-          {testRunError && <div className="ml-auto flex items-center gap-2 text-xs text-red-600 font-bold"><span>❌</span><span>{testRunError}</span></div>}
+          {testRunError && <div className="flex items-center gap-2 text-xs text-red-600 font-bold"><span>❌</span><span>{testRunError}</span></div>}
         </div>
 
         {/* Test run preview — BUG FIX: render đúng resultset đang chọn */}
@@ -624,9 +597,23 @@ export const ReportDesigner: React.FC = () => {
               <Input label="Tên báo cáo *" value={formName} onChange={e => setFormName(e.target.value)} placeholder="VD: Báo cáo Doanh thu theo tháng" />
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Nhóm báo cáo</label>
-                <select value={formGroup} onChange={e => setFormGroup(e.target.value)} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:border-blue-500">
-                  {['Tổng hợp','Bệnh nhân','Tài chính','Dược','Xét nghiệm','Khoa Phòng','Nhân sự'].map(g => (
-                    <option key={g} value={g}>{g}</option>
+                <select
+                  value={formReportGroupId}
+                  onChange={e => {
+                    const gid = e.target.value;
+                    setFormReportGroupId(gid);
+                    if (gid) {
+                      const g = allGroups.find(g => g.id === gid);
+                      if (g) { setFormGroup(g.name); setFormIcon(g.icon); }
+                    } else {
+                      setFormGroup(''); setFormIcon('📂');
+                    }
+                  }}
+                  className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:border-blue-500"
+                >
+                  <option value="">— Chọn nhóm báo cáo —</option>
+                  {allGroups.map(g => (
+                    <option key={g.id} value={g.id}>{g.icon} {g.name}</option>
                   ))}
                 </select>
               </div>
@@ -639,26 +626,20 @@ export const ReportDesigner: React.FC = () => {
               </div>
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Stored Procedure *</label>
-                <input
-                  type="text"
-                  value={spSearch}
-                  onChange={e => setSpSearch(e.target.value)}
-                  placeholder="Tìm kiếm procedure..."
-                  className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:border-blue-500 mb-2"
+                <Select2
+                  isLoading={spLoading}
+                  isDisabled={spLoading}
+                  options={spList.map(sp => ({ value: sp, label: sp }))}
+                  value={formSpName ? { value: formSpName, label: formSpName } : null}
+                  onChange={(opt: any) => { setFormSpName(opt?.value || ''); }}
+                  placeholder="-- Tìm hoặc chọn Procedure --"
+                  noOptionsMessage={() => 'Không tìm thấy procedure nào'}
+                  classNamePrefix="rs"
+                  styles={{
+                    control: (base: any) => ({ ...base, borderRadius: '12px', borderColor: '#e2e8f0', minHeight: '46px' }),
+                  }}
+                  isSearchable
                 />
-                <select
-                  value={formSpName}
-                  onChange={e => { setFormSpName(e.target.value); setSpSearch(''); }}
-                  className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:border-blue-500"
-                  disabled={spLoading}
-                  size={6}
-                >
-                  <option value="">-- Chọn Procedure --</option>
-                  {spFiltered.map(sp => <option key={sp} value={sp}>{sp}</option>)}
-                </select>
-                {spSearch && spFiltered.length === 0 && (
-                  <p className="text-xs text-slate-400 mt-1">Không tìm thấy procedure nào</p>
-                )}
               </div>
             </div>
             <Input label="Mô tả" value={formDesc} onChange={e => setFormDesc(e.target.value)} />
@@ -668,6 +649,16 @@ export const ReportDesigner: React.FC = () => {
         {/* ── Tab: Params ── */}
         {activeTab === 'params' && (
           <div className="space-y-2">
+            {/* Chạy thử toolbar */}
+            <div className="flex items-center gap-3 p-3 bg-blue-50 border border-blue-200 rounded-xl">
+              <Button variant="primary" size="sm" onClick={handleTestRun} loading={testRunning} icon={<span>▶️</span>}>
+                Chạy thử
+              </Button>
+              {!formSpName && (
+                <span className="text-xs text-slate-400 italic">Chọn Stored Procedure ở tab Thông tin trước</span>
+              )}
+            </div>
+
             {/* Header row */}
             <div className="grid grid-cols-12 gap-2 text-[10px] font-black text-slate-400 uppercase px-2">
               <div className="col-span-2">Tên tham số</div>
@@ -761,6 +752,44 @@ export const ReportDesigner: React.FC = () => {
         {/* ── Tab: Mapping ── */}
         {activeTab === 'mapping' && (
           <div className="space-y-2">
+            {/* Auto-detect toolbar */}
+            <div className="flex items-center gap-3 p-3 bg-amber-50 border border-amber-200 rounded-xl">
+              <Button variant="outline" size="sm" loading={spLoading} onClick={async () => {
+                if (!formSpName) { showError('Chọn Stored Procedure ở tab Thông tin trước'); return; }
+                setSpLoading(true);
+                try {
+                  const res = await systemApi.getSPMetadata(formSpName);
+                  if (res.success && res.data) {
+                    setSpMetadata(res.data);
+                    if (!editingReport || editingReport.spName !== formSpName) {
+                      const autoParams: CreateParamDto[] = (res.data.parameters || []).map((p, idx) => ({
+                        paramName: p.name, paramLabel: p.name.replace(/^@/, '').replace(/([A-Z])/g, ' $1').trim(),
+                        paramType: inferParamType(p.type || '', p.name),
+                        sqlType: p.type || null,
+                        maxLength: p.maxLength ?? null, precision: p.precision ?? null, scale: p.scale ?? null,
+                        isNullable: p.isNullable ?? true, hasDefaultValue: false,
+                        valueMode: 'single', optionsSourceType: 'none', options: null, optionsQuery: null, placeholder: null,
+                        defaultValue: null, isRequired: !p.hasDefaultValue && !p.isNullable, displayOrder: idx + 1,
+                      }));
+                      const autoMappings: CreateMappingDto[] = (res.data.columns || []).map((col, idx) => ({
+                        fieldName: col.name, cellAddress: `A${10 + idx}`, mappingType: 'list' as const,
+                        displayOrder: idx + 1, sheetName: availableSheets[0] || undefined,
+                        recordsetIndex: 0, valueType: 'text' as const, formatPattern: null,
+                      }));
+                      setFormParams(autoParams);
+                      setFormMappings(autoMappings);
+                      setAllResultSetMappings({ 0: autoMappings });
+                      success('Đã tự động nhận diện!');
+                    }
+                  }
+                } catch { showError('Không lấy được metadata SP'); }
+                finally { setSpLoading(false); }
+              }} icon={<span>🔍</span>}>Auto-detect</Button>
+              {!formSpName && (
+                <span className="text-xs text-slate-400 italic">Chọn Stored Procedure ở tab Thông tin trước</span>
+              )}
+            </div>
+
             {/* Result set picker */}
             {showResultSetPicker && (
               <div className="flex items-center gap-3 p-3 bg-indigo-50 border border-indigo-200 rounded-xl">

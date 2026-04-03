@@ -8,6 +8,7 @@ import type {
   ConnectionStatus,
   ReportParameter,
   ReportMapping,
+  ReportGroup,
 } from '../types';
 
 // USER endpoints
@@ -57,6 +58,11 @@ export const reportApi = {
 export const adminReportApi = {
   getAllReports: async (): Promise<ApiResponse<Report[]>> => {
     const res = await api.get<ApiResponse<Report[]>>('/reports');
+    return res.data;
+  },
+
+  getReportGroups: async (): Promise<ApiResponse<ReportGroup[]>> => {
+    const res = await api.get<ApiResponse<ReportGroup[]>>('/report-groups');
     return res.data;
   },
 
@@ -146,6 +152,7 @@ export const systemApi = {
     database: string;
     user: string;
     password: string;
+    queryTimeout?: number;
   }): Promise<ApiResponse> => {
     const res = await api.post<ApiResponse>('/system/setup-connection', config);
     return res.data;

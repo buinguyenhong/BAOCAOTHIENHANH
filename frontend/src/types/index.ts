@@ -219,6 +219,7 @@ export interface CreateReportDto {
   groupIcon?: string;
   spName: string;
   description?: string;
+  reportGroupId?: string | null;
   parameters?: CreateParamDto[];
   mappings?: CreateMappingDto[];
 }

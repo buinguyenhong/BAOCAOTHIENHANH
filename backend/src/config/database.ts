@@ -356,6 +356,7 @@ export interface HospitalDbConfig {
     encrypt: boolean;
     trustServerCertificate: boolean;
   };
+  queryTimeout?: number; // seconds, default 30
 }
 
 export const getHospitalDbConfig = (): HospitalDbConfig | null => {
@@ -384,8 +385,17 @@ export const getHospitalDbPool = async (): Promise<sql.ConnectionPool> => {
   }
   try {
     return await sql.connect({
-      ...config,
+      server: config.server,
+      database: config.database,
+      user: config.user,
+      password: config.password,
+      options: {
+        encrypt: config.options?.encrypt ?? false,
+        trustServerCertificate: config.options?.trustServerCertificate ?? true,
+      },
       pool: { max: 5, min: 0, idleTimeoutMillis: 30000 },
+      connectionTimeout: 30000,
+      requestTimeout: (config.queryTimeout ?? 30) * 1000,
     });
   } catch (err) {
     console.error('❌ HospitalDB connection failed:', err);

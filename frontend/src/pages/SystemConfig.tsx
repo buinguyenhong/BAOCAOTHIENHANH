@@ -12,7 +12,12 @@ export const SystemConfig: React.FC = () => {
   const navigate = useNavigate();
   const { success, error: showError } = useToast();
 
-  const [status, setStatus] = useState<ConnectionStatus | null>(null);
+  const [status, setStatus] = useState<(ConnectionStatus & {
+    hospitalServer?: string;
+    hospitalDatabase?: string;
+    hospitalUser?: string;
+    queryTimeout?: number;
+  }) | null>(null);
   const [loading, setLoading] = useState(true);
   const [testing, setTesting] = useState(false);
 
@@ -21,6 +26,7 @@ export const SystemConfig: React.FC = () => {
   const [database, setDatabase] = useState('');
   const [user, setUser] = useState('');
   const [password, setPassword] = useState('');
+  const [queryTimeout, setQueryTimeout] = useState(30);
   const [saving, setSaving] = useState(false);
 
   const fetchStatus = async () => {
@@ -29,6 +35,11 @@ export const SystemConfig: React.FC = () => {
       const res = await systemApi.getConnectionStatus();
       if (res.success && res.data) {
         setStatus(res.data);
+        // Fill form với config hiện tại (không có password vì lý do bảo mật)
+        setServer((res.data as any).hospitalServer || '');
+        setDatabase((res.data as any).hospitalDatabase || '');
+        setUser((res.data as any).hospitalUser || '');
+        setQueryTimeout((res.data as any).queryTimeout || 30);
       }
     } catch (err: any) {
       showError(err.message);
@@ -49,7 +60,7 @@ export const SystemConfig: React.FC = () => {
 
     setSaving(true);
     try {
-      const res = await systemApi.setupConnection({ server, database, user, password });
+      const res = await systemApi.setupConnection({ server, database, user, password, queryTimeout });
       if (res.success) {
         success('Cấu hình kết nối thành công!');
         fetchStatus();
@@ -115,7 +126,7 @@ export const SystemConfig: React.FC = () => {
                   placeholder="VD: HospitalDB"
                 />
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-3 gap-4">
                 <Input
                   label="Username *"
                   value={user}
@@ -129,6 +140,21 @@ export const SystemConfig: React.FC = () => {
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Mật khẩu SQL Server"
                 />
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">
+                    Query Timeout (giây)
+                  </label>
+                  <input
+                    type="number"
+                    min={5}
+                    max={300}
+                    value={queryTimeout}
+                    onChange={(e) => setQueryTimeout(Number(e.target.value))}
+                    className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:border-blue-500 bg-white"
+                    placeholder="30"
+                  />
+                  <p className="text-[10px] text-slate-400 mt-1">5–300 giây. Mặc định: 30s</p>
+                </div>
               </div>
 
               <div className="pt-4 flex items-center gap-3">

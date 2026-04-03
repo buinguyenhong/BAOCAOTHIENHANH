@@ -117,6 +117,7 @@ export interface Report {
   spName: string;
   description: string | null;
   templateFile: string | null;
+  reportGroupId: string | null;
   createdBy: string | null;
   createdAt: Date;
   updatedAt: Date;
@@ -133,6 +134,7 @@ export interface CreateReportDto {
   spName: string;
   description?: string;
   templateFile?: string;
+  reportGroupId?: string | null;
 }
 
 export interface UpdateReportDto {
