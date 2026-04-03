@@ -55,7 +55,12 @@ export const ReportDesigner: React.FC = () => {
   const [groups, setGroups] = useState<ReportGroupView[]>([]);
   const [loading, setLoading] = useState(true);
   const [spList, setSpList] = useState<string[]>([]);
+  const [spSearch, setSpSearch] = useState('');
   const [spLoading, setSpLoading] = useState(false);
+
+  const spFiltered = spList.filter(sp =>
+    sp.toLowerCase().includes(spSearch.toLowerCase())
+  );
 
   // Form state
   const [showForm, setShowForm] = useState(false);
@@ -256,7 +261,7 @@ export const ReportDesigner: React.FC = () => {
   const openNewForm = () => {
     setEditingReport(null);
     setFormName(''); setFormGroup('Tổng hợp'); setFormIcon('📂');
-    setFormSpName(''); setFormDesc('');
+    setFormSpName(''); setFormDesc(''); setSpSearch('');
     setFormParams([]); setFormMappings([]); setAllResultSetMappings({});
     setSpMetadata(null); setFormTemplateFile(''); setTemplatePreview('');
     setTestRunResult(null); setTestRunError('');
@@ -269,7 +274,7 @@ export const ReportDesigner: React.FC = () => {
     setFormName(report.name);
     setFormGroup(report.groupName || 'Tổng hợp');
     setFormIcon(report.groupIcon || '📂');
-    setFormSpName(report.spName);
+    setFormSpName(report.spName); setSpSearch('');
     setFormDesc(report.description || '');
     setFormTemplateFile(report.templateFile || '');
 
@@ -634,11 +639,26 @@ export const ReportDesigner: React.FC = () => {
               </div>
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">Stored Procedure *</label>
-                <select value={formSpName} onChange={e => setFormSpName(e.target.value)}
-                  className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:border-blue-500" disabled={spLoading}>
+                <input
+                  type="text"
+                  value={spSearch}
+                  onChange={e => setSpSearch(e.target.value)}
+                  placeholder="Tìm kiếm procedure..."
+                  className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:border-blue-500 mb-2"
+                />
+                <select
+                  value={formSpName}
+                  onChange={e => { setFormSpName(e.target.value); setSpSearch(''); }}
+                  className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:border-blue-500"
+                  disabled={spLoading}
+                  size={6}
+                >
                   <option value="">-- Chọn Procedure --</option>
-                  {spList.map(sp => <option key={sp} value={sp}>{sp}</option>)}
+                  {spFiltered.map(sp => <option key={sp} value={sp}>{sp}</option>)}
                 </select>
+                {spSearch && spFiltered.length === 0 && (
+                  <p className="text-xs text-slate-400 mt-1">Không tìm thấy procedure nào</p>
+                )}
               </div>
             </div>
             <Input label="Mô tả" value={formDesc} onChange={e => setFormDesc(e.target.value)} />
