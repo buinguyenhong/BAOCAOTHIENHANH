@@ -28,3 +28,9 @@ Thumbs.db
 # Temp
 *.tmp
 *.temp
+
+
+backend/package-lock.json
+frontend/package-lock.json
+backend/data/hisreport.db-shm
+backend/data/hisreport.db-wal
