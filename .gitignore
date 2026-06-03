@@ -32,5 +32,5 @@ Thumbs.db
 
 backend/package-lock.json
 frontend/package-lock.json
-backend/data/hisreport.db-shm
-backend/data/hisreport.db-wal
+backend/data/hisreports.db-shm
+backend/data/hisreports.db-wal

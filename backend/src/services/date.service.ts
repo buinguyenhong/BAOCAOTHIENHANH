@@ -36,7 +36,8 @@ import {
  *   new Date(2024, 0, 1, 10, 30) → 45292.4375 (01/01/2024 10:30)
  */
 export function dateToExcelSerial(date: Date): number {
-  return (date.getTime() - EXCEL_EPOCH_MS) / (1000 * 60 * 60 * 24);
+  const localTime = date.getTime() - date.getTimezoneOffset() * 60 * 1000;
+  return (localTime - EXCEL_EPOCH_MS) / (1000 * 60 * 60 * 24);
 }
 
 /**
@@ -44,7 +45,9 @@ export function dateToExcelSerial(date: Date): number {
  * Dùng khi cần đọc ngược (hiếm dùng trong export, dùng nhiều trong preview).
  */
 export function excelSerialToDate(serial: number): Date {
-  return new Date(EXCEL_EPOCH_MS + serial * 86400 * 1000);
+  const tempDate = new Date(EXCEL_EPOCH_MS + serial * 86400 * 1000);
+  const localTime = tempDate.getTime() + tempDate.getTimezoneOffset() * 60 * 1000;
+  return new Date(localTime);
 }
 
 // ─────────────────────────────────────────────

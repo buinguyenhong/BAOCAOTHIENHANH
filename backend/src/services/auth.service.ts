@@ -490,7 +490,7 @@ export class ReportService {
     let groupName = dto.groupName || 'Tổng hợp';
     let groupIcon = dto.groupIcon || '📂';
     if (dto.reportGroupId) {
-      const group = authService.getReportGroupById(dto.reportGroupId) as any;
+      const group = await authService.getReportGroupById(dto.reportGroupId) as any;
       if (group) {
         groupName = group.name;
         groupIcon = group.icon;

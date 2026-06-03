@@ -24,72 +24,100 @@ import { normalizeParamName } from '../utils/normalize.js';
 // ─────────────────────────────────────────────
 
 /**
- * Serialize Date object hoặc string → chuỗi định dạng YYYY-MM-DD (UTC).
+ * Serialize Date object hoặc string → chuỗi định dạng YYYY-MM-DD.
  *
- * FIX Timezone: Luôn dùng UTC methods để tránh lệch 0.7 ngày.
- * Server bệnh viện chạy local time (VN = UTC+7).
- * VD: '2024-01-01' parse as local → getDate() có thể trả về '2023-12-31'
- * khi input là '2024-01-01T00:00:00Z'. Dùng UTC methods đảm bảo
- * ngày gửi vào SP luôn đúng với ngày thực tế.
+ * FIX Timezone:
+ * - Nếu là chuỗi đã ở định dạng YYYY-MM-DD → Trả về trực tiếp để tránh lệch múi giờ.
+ * - Nếu chứa 'Z' hoặc UTC indicator → Dùng UTC methods để giữ giá trị chuẩn.
+ * - Nếu không có UTC indicator (mặc định địa phương) hoặc là Date object → Dùng local methods.
  */
 export function serializeDateValue(value: unknown): string {
   if (!value) return '';
 
   // Date object
   if (value instanceof Date && !isNaN(value.getTime())) {
-    const y = value.getUTCFullYear();
-    const m = String(value.getUTCMonth() + 1).padStart(2, '0');
-    const d = String(value.getUTCDate()).padStart(2, '0');
+    const y = value.getFullYear();
+    const m = String(value.getMonth() + 1).padStart(2, '0');
+    const d = String(value.getDate()).padStart(2, '0');
     return `${y}-${m}-${d}`;
   }
 
-  // String — chuẩn hóa: nếu là ngày hợp lệ thì format lại
   const s = String(value).trim();
   if (!s) return '';
 
-  const parsed = new Date(s);
-  if (!isNaN(parsed.getTime())) {
-    const y = parsed.getUTCFullYear();
-    const m = String(parsed.getUTCMonth() + 1).padStart(2, '0');
-    const d = String(parsed.getUTCDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
+  // Định dạng chuẩn YYYY-MM-DD → Trả trực tiếp
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    return s;
   }
 
-  // String không parse được → trả nguyên (đã format sẵn)
+  const parsed = new Date(s);
+  if (!isNaN(parsed.getTime())) {
+    const hasUtcIndicator = s.includes('Z') || /([+-]\d{2}:\d{2})$/.test(s);
+    if (hasUtcIndicator) {
+      const y = parsed.getUTCFullYear();
+      const m = String(parsed.getUTCMonth() + 1).padStart(2, '0');
+      const d = String(parsed.getUTCDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    } else {
+      const y = parsed.getFullYear();
+      const m = String(parsed.getMonth() + 1).padStart(2, '0');
+      const d = String(parsed.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+  }
+
   return s;
 }
 
 /**
- * Serialize DateTime object hoặc string → chuỗi định dạng YYYY-MM-DD HH:mm:ss (UTC).
+ * Serialize DateTime object hoặc string → chuỗi định dạng YYYY-MM-DD HH:mm:ss.
  *
- * FIX Timezone: Dùng UTC methods tương tự serializeDateValue.
- * Đảm bảo giờ server bệnh viện không bị lệch ±7 tiếng so với input.
+ * FIX Timezone: Tương tự serializeDateValue, tránh lệch giờ cục bộ (ví dụ ±7 tiếng ở Việt Nam).
  */
 export function serializeDateTimeValue(value: unknown): string {
   if (!value) return '';
 
   if (value instanceof Date && !isNaN(value.getTime())) {
-    const y = value.getUTCFullYear();
-    const m = String(value.getUTCMonth() + 1).padStart(2, '0');
-    const d = String(value.getUTCDate()).padStart(2, '0');
-    const hh = String(value.getUTCHours()).padStart(2, '0');
-    const mm = String(value.getUTCMinutes()).padStart(2, '0');
-    const ss = String(value.getUTCSeconds()).padStart(2, '0');
+    const y = value.getFullYear();
+    const m = String(value.getMonth() + 1).padStart(2, '0');
+    const d = String(value.getDate()).padStart(2, '0');
+    const hh = String(value.getHours()).padStart(2, '0');
+    const mm = String(value.getMinutes()).padStart(2, '0');
+    const ss = String(value.getSeconds()).padStart(2, '0');
     return `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
   }
 
   const s = String(value).trim();
   if (!s) return '';
 
+  // Định dạng chuẩn YYYY-MM-DD HH:mm:ss hoặc YYYY-MM-DDTHH:mm → Trả trực tiếp / chuẩn hóa nhanh
+  if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}$/.test(s)) {
+    return s.replace('T', ' ');
+  }
+  if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}$/.test(s)) {
+    return s.replace('T', ' ') + ':00';
+  }
+
   const parsed = new Date(s);
   if (!isNaN(parsed.getTime())) {
-    const y = parsed.getUTCFullYear();
-    const m = String(parsed.getUTCMonth() + 1).padStart(2, '0');
-    const d = String(parsed.getUTCDate()).padStart(2, '0');
-    const hh = String(parsed.getUTCHours()).padStart(2, '0');
-    const mm = String(parsed.getUTCMinutes()).padStart(2, '0');
-    const ss = String(parsed.getUTCSeconds()).padStart(2, '0');
-    return `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
+    const hasUtcIndicator = s.includes('Z') || /([+-]\d{2}:\d{2})$/.test(s);
+    if (hasUtcIndicator) {
+      const y = parsed.getUTCFullYear();
+      const m = String(parsed.getUTCMonth() + 1).padStart(2, '0');
+      const d = String(parsed.getUTCDate()).padStart(2, '0');
+      const hh = String(parsed.getUTCHours()).padStart(2, '0');
+      const mm = String(parsed.getUTCMinutes()).padStart(2, '0');
+      const ss = String(parsed.getUTCSeconds()).padStart(2, '0');
+      return `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
+    } else {
+      const y = parsed.getFullYear();
+      const m = String(parsed.getMonth() + 1).padStart(2, '0');
+      const d = String(parsed.getDate()).padStart(2, '0');
+      const hh = String(parsed.getHours()).padStart(2, '0');
+      const mm = String(parsed.getMinutes()).padStart(2, '0');
+      const ss = String(parsed.getSeconds()).padStart(2, '0');
+      return `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
+    }
   }
 
   return s;

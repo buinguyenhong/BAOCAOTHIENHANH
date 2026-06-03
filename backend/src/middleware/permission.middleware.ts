@@ -68,7 +68,7 @@ async function checkFullPermission(
   if (userGroups.length === 0) return false;
 
   // Lấy report để kiểm tra reportGroupId
-  const report = reportService.getReportById(reportId);
+  const report = await reportService.getReportById(reportId);
   if (!report) return false;
 
   // Report có nhóm → user phải thuộc nhóm đó

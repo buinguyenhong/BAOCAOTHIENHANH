@@ -58,7 +58,8 @@ const NUM_FMT_DATETIME = 'dd/MM/yyyy HH:mm:ss';
 
 /** Convert JS Date → Excel serial number */
 function dateToExcelSerial(date: Date): number {
-  return (date.getTime() - EXCEL_EPOCH_MS) / (1000 * 60 * 60 * 24);
+  const localTime = date.getTime() - date.getTimezoneOffset() * 60 * 1000;
+  return (localTime - EXCEL_EPOCH_MS) / (1000 * 60 * 60 * 24);
 }
 
 /** True if value is a JS Date object */
