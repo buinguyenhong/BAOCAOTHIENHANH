@@ -59,7 +59,7 @@ export const Header: React.FC<HeaderProps> = ({ onToggleSidebar }) => {
               <h1 className="font-black text-base tracking-tight text-slate-800 leading-none">
                 HIS <span className="text-blue-600">REPORTS</span>
               </h1>
-              <p className="text-[10px] text-slate-400 font-semibold tracking-wide">Hệ thống Báo cáo Bệnh viện</p>
+              <p className="text-[10px] text-slate-400 font-semibold tracking-wide">Hệ thống Báo cáo Bệnh viện - BNH 2026</p>
             </div>
           </div>
         </div>

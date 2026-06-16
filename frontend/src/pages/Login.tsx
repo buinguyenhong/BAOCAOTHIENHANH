@@ -75,7 +75,7 @@ export const Login: React.FC = () => {
         </div>
 
         <p className="text-center text-xs text-slate-400 mt-6">
-          © {new Date().getFullYear()} HIS Reports · Bệnh viện
+          © 2026 HIS Reports · Bùi Nguyên Hồng · CNTT
         </p>
       </div>
     </div>

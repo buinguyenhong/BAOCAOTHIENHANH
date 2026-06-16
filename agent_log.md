@@ -18,6 +18,16 @@ Tài liệu này lưu trữ toàn bộ các thay đổi được thực hiện b
 
 ## 📜 Lịch sử thay đổi
 
+### [2026-06-16 13:28] Cập nhật thông tin bản quyền và tiêu đề giới thiệu (Custom Branding)
+* **Tác vụ**: Điều chỉnh thông tin giới thiệu tại màn hình Đăng nhập và giao diện chính theo yêu cầu riêng của tác giả.
+* **Chi tiết thay đổi**:
+  * **Màn hình Đăng nhập**: Sửa đổi [Login.tsx](file:///d:/Project/BAOCAOTHIENHANH/BAOCAOTHIENHANH/frontend/src/pages/Login.tsx) chuyển dòng chân trang từ `© 2026 HIS Reports · Bệnh viện` thành `© 2026 HIS Reports · Bùi Nguyên Hồng · CNTT`.
+  * **Giao diện chính (Header)**: Sửa đổi tiêu đề phụ tại [Header.tsx](file:///d:/Project/BAOCAOTHIENHANH/BAOCAOTHIENHANH/frontend/src/components/Header.tsx) từ `Hệ thống Báo cáo Bệnh viện` thành `Hệ thống Báo cáo Bệnh viện - BNH 2026`.
+  * **Rebuild**: Đã biên dịch lại frontend cho bản phân phối tĩnh.
+* **Trạng thái**: Đã hoàn thành.
+
+---
+
 ### [2026-06-16 13:10] Khắc phục lỗi che giấu lỗi chạy báo cáo (Silent Error Suppression)
 * **Tác vụ**: Sửa lỗi màn hình "Đang thực thi báo cáo" nhấp nháy hiện lên rồi tự động biến mất lập tức khi gặp lỗi truy vấn dữ liệu / kết nối database mà không hiện bất cứ thông báo nào.
 * **Chi tiết thay đổi**:
