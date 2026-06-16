@@ -32,13 +32,14 @@ export const useReports = () => {
       if (res.success && res.data) {
         return res.data;
       } else {
-        setError(res.error || 'Lỗi thực thi báo cáo');
-        return null;
+        const errMsg = res.error || 'Lỗi thực thi báo cáo';
+        setError(errMsg);
+        throw new Error(errMsg);
       }
     } catch (err: any) {
       const msg = err.response?.data?.error || err.message || 'Lỗi kết nối';
       setError(msg);
-      return null;
+      throw new Error(msg);
     } finally {
       setLoading(false);
     }

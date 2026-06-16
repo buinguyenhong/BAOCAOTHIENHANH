@@ -18,6 +18,16 @@ Tài liệu này lưu trữ toàn bộ các thay đổi được thực hiện b
 
 ## 📜 Lịch sử thay đổi
 
+### [2026-06-16 13:10] Khắc phục lỗi che giấu lỗi chạy báo cáo (Silent Error Suppression)
+* **Tác vụ**: Sửa lỗi màn hình "Đang thực thi báo cáo" nhấp nháy hiện lên rồi tự động biến mất lập tức khi gặp lỗi truy vấn dữ liệu / kết nối database mà không hiện bất cứ thông báo nào.
+* **Chi tiết thay đổi**:
+  * **Lan truyền lỗi truy vấn (Propagate Error)**: Chỉnh sửa hàm `executeReport` trong [useReports.ts](file:///d:/Project/BAOCAOTHIENHANH/BAOCAOTHIENHANH/frontend/src/hooks/useReports.ts) để ném ra ngoại lệ (`throw new Error(...)`) khi nhận được kết quả thất bại hoặc lỗi mạng, thay vì chỉ đặt state nội bộ và trả về `null`.
+  * **Hiển thị Toast báo lỗi**: Hành động ném lỗi này giúp block `try-catch` tại [Dashboard.tsx](file:///d:/Project/BAOCAOTHIENHANH/BAOCAOTHIENHANH/frontend/src/pages/Dashboard.tsx) bắt được lỗi và kích hoạt `showError(...)` để hiện thông báo Toast màu đỏ cho người dùng (ví dụ: "Không kết nối được SQL Server" thay vì tự động tắt loader im lặng).
+  * **Rebuild**: Đã biên dịch lại frontend cho bản phân phối tĩnh.
+* **Trạng thái**: Đã hoàn thành.
+
+---
+
 ### [2026-06-16 12:55] Tối ưu hóa tập lệnh chạy ngầm (run-server.vbs)
 * **Tác vụ**: Sửa lỗi tập lệnh VBScript không chạy được trên máy chủ mới do hardcode đường dẫn Node.js.
 * **Chi tiết thay đổi**:
