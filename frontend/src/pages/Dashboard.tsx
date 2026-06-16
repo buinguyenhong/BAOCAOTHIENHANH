@@ -4,6 +4,7 @@ import { Header } from '../components/Header';
 import { Sidebar } from '../components/Sidebar';
 import { DataTable } from '../components/DataTable';
 import { ParameterForm } from '../components/ParameterForm';
+import { ReportLoadingProgress } from '../components/ReportLoadingProgress';
 import { Button } from '../components/ui/Button';
 import { Spinner, EmptyState } from '../components/ui/Card';
 import { useReports } from '../hooks/useReports';
@@ -209,6 +210,11 @@ export const Dashboard: React.FC = () => {
                     </div>
                   );
                 })}
+
+                {/* Loading state with progress */}
+                {executing && allRecordsets.length === 0 && (
+                  <ReportLoadingProgress spName={selectedReport.spName} />
+                )}
 
                 {/* Empty state */}
                 {allRecordsets.length === 0 && !executing && (

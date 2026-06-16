@@ -1,0 +1,21 @@
+# AI Agent Custom Rules & Guidelines (Cursor)
+
+Bất kỳ AI Agent nào khi tham gia đóng góp mã nguồn cho dự án này đều **BẮT BUỘC** phải tuân thủ nghiêm ngặt các quy định dưới đây.
+
+## 1. Nhật ký Thay đổi của Agent (Agent Modification Log)
+* Hệ thống quản lý lịch sử thay đổi của Agent được lưu giữ tập trung tại file [agent_log.md](file:///d:/Project/BAOCAOTHIENHANH/BAOCAOTHIENHANH/agent_log.md).
+* **Quy trình bắt buộc**:
+  1. Trước khi thực hiện thay đổi: Đọc file [agent_log.md](file:///d:/Project/BAOCAOTHIENHANH/BAOCAOTHIENHANH/agent_log.md) để biết bối cảnh và các đợt chỉnh sửa trước đó.
+  2. Sau khi thực hiện bất kỳ thay đổi nào (thêm mới file, chỉnh sửa code, xóa file, thay đổi config): **PHẢI** cập nhật ngay một mục nhật ký mới ở phần **Lịch sử thay đổi** của file [agent_log.md](file:///d:/Project/BAOCAOTHIENHANH/BAOCAOTHIENHANH/agent_log.md).
+  3. Dòng nhật ký mới **phải được đưa lên trên cùng** của danh sách (xếp theo thời gian giảm dần).
+  4. Nội dung nhật ký cần ghi rõ:
+     * **Thời gian**: Theo định dạng `YYYY-MM-DD HH:mm` (giờ địa phương).
+     * **Tác vụ**: Mô tả ngắn gọn nhiệm vụ.
+     * **Chi tiết thay đổi**: Các file bị ảnh hưởng (dưới dạng markdown link `file:///`), lý do và giải pháp đã áp dụng.
+     * **Trạng thái**: Trạng thái hiện tại của công việc (Hoàn thành / Đang kiểm thử / Đang chờ phản hồi).
+
+## 2. Tiêu chuẩn Mã nguồn & Kiến trúc
+* Duy trì và tuân thủ tuyệt đối cơ chế **Deterministic Excel Export**: Không được đưa các phán đoán kiểu dữ liệu tự động (heuristics) vào tầng Export. Mọi dữ liệu ghi vào Excel phải dựa trên cấu hình `valueType` rõ ràng của mapping.
+* Bảo toàn cấu trúc List Block: Khi tối ưu hóa hoặc sửa đổi logic điền danh sách, hãy đảm bảo tính toàn vẹn của logic `spliceRows` từ dưới lên để tránh lệch dòng dữ liệu.
+* Khi thay đổi các hàm tương tác database (SQLite/MSSQL), hãy chú ý tối ưu hóa hiệu năng kết nối và tránh lặp lại việc đóng/mở pool MSSQL vô tội vạ.
+* Giữ nguyên các comments gốc và tài liệu API cũ trừ khi có yêu cầu cụ thể từ người dùng.

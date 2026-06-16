@@ -397,12 +397,70 @@ export const authService = new AuthService();
 // Report CRUD
 // =====================
 export class ReportService {
+  private async loadParamsAndMappingsForReports(reports: Report[]): Promise<void> {
+    if (reports.length === 0) return;
+
+    // Fetch all parameters and mappings in 2 queries
+    const allParams = configDb<any>('SELECT * FROM ReportParameters ORDER BY displayOrder');
+    const paramsMap = new Map<string, ReportParameter[]>();
+    for (const p of allParams) {
+      const mappedParam: ReportParameter = {
+        id: p.id,
+        reportId: p.reportId,
+        paramName: p.paramName,
+        paramLabel: p.paramLabel ?? p.paramName,
+        sqlType: p.sqlType ?? null,
+        maxLength: p.maxLength ?? null,
+        precision: p.precision ?? null,
+        scale: p.scale ?? null,
+        isNullable: !!p.isNullable,
+        hasDefaultValue: !!p.hasDefaultValue,
+        paramType: (p.paramType as any) ?? 'text',
+        valueMode: (p.valueMode as any) ?? 'single',
+        optionsSourceType: (p.optionsSourceType as any) ?? 'none',
+        options: p.options ? JSON.parse(p.options) : null,
+        optionsQuery: p.optionsQuery ?? null,
+        placeholder: p.placeholder ?? null,
+        defaultValue: p.defaultValue ?? null,
+        isRequired: !!p.isRequired,
+        displayOrder: p.displayOrder ?? 0,
+      };
+      if (!paramsMap.has(p.reportId)) {
+        paramsMap.set(p.reportId, []);
+      }
+      paramsMap.get(p.reportId)!.push(mappedParam);
+    }
+
+    const allMappings = configDb<any>('SELECT * FROM ReportMappings ORDER BY displayOrder');
+    const mappingsMap = new Map<string, ReportMapping[]>();
+    for (const m of allMappings) {
+      const mappedMapping: ReportMapping = {
+        id: m.id,
+        reportId: m.reportId,
+        fieldName: m.fieldName,
+        cellAddress: m.cellAddress ?? null,
+        mappingType: (m.mappingType as any) ?? 'list',
+        displayOrder: m.displayOrder ?? 0,
+        sheetName: m.sheetName ?? null,
+        recordsetIndex: m.recordsetIndex ?? 0,
+        valueType: m.valueType ?? null,
+        formatPattern: m.formatPattern ?? null,
+      };
+      if (!mappingsMap.has(m.reportId)) {
+        mappingsMap.set(m.reportId, []);
+      }
+      mappingsMap.get(m.reportId)!.push(mappedMapping);
+    }
+
+    for (const report of reports) {
+      (report as any).parameters = paramsMap.get(report.id) || [];
+      (report as any).mappings = mappingsMap.get(report.id) || [];
+    }
+  }
+
   async getAllReports(): Promise<Report[]> {
     const reports = configDb<Report>('SELECT * FROM Reports ORDER BY groupName, name');
-    for (const report of reports) {
-      (report as any).parameters = await this.getReportParameters(report.id);
-      (report as any).mappings = await this.getReportMappings(report.id);
-    }
+    await this.loadParamsAndMappingsForReports(reports);
     return reports;
   }
 
@@ -461,10 +519,7 @@ export class ReportService {
         { userId }
       );
     }
-    for (const report of reports) {
-      (report as any).parameters = await this.getReportParameters(report.id);
-      (report as any).mappings = await this.getReportMappings(report.id);
-    }
+    await this.loadParamsAndMappingsForReports(reports);
     return reports;
   }
 

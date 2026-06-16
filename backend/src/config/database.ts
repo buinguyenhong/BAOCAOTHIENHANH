@@ -370,21 +370,33 @@ export const getHospitalDbConfig = (): HospitalDbConfig | null => {
   return null;
 };
 
+let _hospitalPool: sql.ConnectionPool | null = null;
+
 export const saveHospitalDbConfig = (config: HospitalDbConfig): void => {
   const dir = path.dirname(HOSPITAL_DB_CONFIG_FILE);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
   fs.writeFileSync(HOSPITAL_DB_CONFIG_FILE, JSON.stringify(config, null, 2));
+
+  // Reset và đóng pool cũ nếu cấu hình thay đổi
+  if (_hospitalPool) {
+    const oldPool = _hospitalPool;
+    _hospitalPool = null;
+    oldPool.close().catch(err => console.error('Error closing old pool:', err));
+  }
 };
 
 export const getHospitalDbPool = async (): Promise<sql.ConnectionPool> => {
+  if (_hospitalPool) {
+    return _hospitalPool;
+  }
   const config = getHospitalDbConfig();
   if (!config) {
     throw new Error('HospitalDB chưa được cấu hình. Vui lòng cấu hình kết nối HospitalDB.');
   }
   try {
-    return await sql.connect({
+    _hospitalPool = await sql.connect({
       server: config.server,
       database: config.database,
       user: config.user,
@@ -393,10 +405,11 @@ export const getHospitalDbPool = async (): Promise<sql.ConnectionPool> => {
         encrypt: config.options?.encrypt ?? false,
         trustServerCertificate: config.options?.trustServerCertificate ?? true,
       },
-      pool: { max: 5, min: 0, idleTimeoutMillis: 30000 },
+      pool: { max: 10, min: 2, idleTimeoutMillis: 30000 },
       connectionTimeout: 30000,
       requestTimeout: (config.queryTimeout ?? 30) * 1000,
     });
+    return _hospitalPool;
   } catch (err) {
     console.error('❌ HospitalDB connection failed:', err);
     throw err;
@@ -409,19 +422,15 @@ export const hospitalDb = async (
   isProcedure = false
 ): Promise<sql.IResult<any>> => {
   const pool = await getHospitalDbPool();
-  try {
-    const request = pool.request();
-    if (params) {
-      for (const [key, value] of Object.entries(params)) {
-        // Strip @ prefix for tedious driver compatibility
-        const cleanKey = key.startsWith('@') ? key.slice(1) : key;
-        request.input(cleanKey, value ?? null);
-      }
+  const request = pool.request();
+  if (params) {
+    for (const [key, value] of Object.entries(params)) {
+      // Strip @ prefix for tedious driver compatibility
+      const cleanKey = key.startsWith('@') ? key.slice(1) : key;
+      request.input(cleanKey, value ?? null);
     }
-    return isProcedure ? await request.execute(query) : await request.query(query);
-  } finally {
-    await pool.close();
   }
+  return isProcedure ? await request.execute(query) : await request.query(query);
 };
 
 // Test connections
