@@ -18,7 +18,7 @@ Set sh = CreateObject("WScript.Shell")
 backendPort = "5000"
 frontendPort = "5173"
 
-npmPath = """C:\Program Files\nodejs\npm.cmd"""
+npmPath = "npm"
 
 ' ===== Lấy thư mục hiện tại =====
 scriptDir = CreateObject("Scripting.FileSystemObject") _

@@ -18,6 +18,14 @@ Tài liệu này lưu trữ toàn bộ các thay đổi được thực hiện b
 
 ## 📜 Lịch sử thay đổi
 
+### [2026-06-16 12:55] Tối ưu hóa tập lệnh chạy ngầm (run-server.vbs)
+* **Tác vụ**: Sửa lỗi tập lệnh VBScript không chạy được trên máy chủ mới do hardcode đường dẫn Node.js.
+* **Chi tiết thay đổi**:
+  * **Sửa đường dẫn npm**: Đã thay thế đường dẫn cứng Node.js `C:\Program Files\nodejs\npm.cmd` trong tệp [run-server.vbs](file:///d:/Project/BAOCAOTHIENHANH/BAOCAOTHIENHANH/scripts/run-server.vbs) thành `"npm"`. Trình Windows Script Host sẽ tự động phân giải qua biến môi trường hệ thống (`PATH`), giúp tập lệnh chạy được trên bất kỳ máy chủ nào đã cài đặt Node.js mà không cần sửa code.
+* **Trạng thái**: Đã hoàn thành.
+
+---
+
 ### [2026-06-16 11:20] Tối ưu hóa tải trang Offline (Mạng LAN không Internet)
 * **Tác vụ**: Sửa lỗi trang tải lần đầu chậm do thiết bị tìm kiếm tài nguyên ngoài internet (Google Fonts) trong môi trường mạng LAN bị ngắt kết nối ngoài.
 * **Chi tiết thay đổi**:
