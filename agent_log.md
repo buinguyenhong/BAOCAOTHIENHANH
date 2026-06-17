@@ -18,6 +18,15 @@ Tài liệu này lưu trữ toàn bộ các thay đổi được thực hiện b
 
 ## 📜 Lịch sử thay đổi
 
+### [2026-06-17 13:46] Sửa lỗi mất kết nối MSSQL (Connection is closed)
+* **Tác vụ**: Khắc phục lỗi báo `Connection is closed` khi chạy báo cáo sau một thời gian nhàn rỗi (idle) hoặc gặp sự cố ngắt kết nối mạng.
+* **Chi tiết thay đổi**:
+  * **Kiểm tra trạng thái kết nối pool**: Sửa đổi hàm `getHospitalDbPool()` trong [database.ts](file:///d:/Project/BAOCAOTHIENHANH/BAOCAOTHIENHANH/backend/src/config/database.ts) để kiểm tra thuộc tính `.connected` của pool. Nếu pool đã bị đóng hoặc mất kết nối, hệ thống sẽ tiến hành đóng kết nối cũ một cách an toàn và tự động khởi tạo/kết nối lại một pool mới.
+  * **Giải phóng biến toàn cục khi lỗi**: Đảm bảo gán `_hospitalPool = null` khi quá trình kết nối bị lỗi để các truy vấn sau có thể thực hiện lại từ đầu.
+* **Trạng thái**: Đã hoàn thành.
+
+---
+
 ### [2026-06-16 13:28] Cập nhật thông tin bản quyền và tiêu đề giới thiệu (Custom Branding)
 * **Tác vụ**: Điều chỉnh thông tin giới thiệu tại màn hình Đăng nhập và giao diện chính theo yêu cầu riêng của tác giả.
 * **Chi tiết thay đổi**:

@@ -388,9 +388,19 @@ export const saveHospitalDbConfig = (config: HospitalDbConfig): void => {
 };
 
 export const getHospitalDbPool = async (): Promise<sql.ConnectionPool> => {
-  if (_hospitalPool) {
+  if (_hospitalPool && _hospitalPool.connected) {
     return _hospitalPool;
   }
+
+  if (_hospitalPool) {
+    try {
+      await _hospitalPool.close();
+    } catch (_) {
+      // ignore
+    }
+    _hospitalPool = null;
+  }
+
   const config = getHospitalDbConfig();
   if (!config) {
     throw new Error('HospitalDB chưa được cấu hình. Vui lòng cấu hình kết nối HospitalDB.');
@@ -411,6 +421,7 @@ export const getHospitalDbPool = async (): Promise<sql.ConnectionPool> => {
     });
     return _hospitalPool;
   } catch (err) {
+    _hospitalPool = null;
     console.error('❌ HospitalDB connection failed:', err);
     throw err;
   }
