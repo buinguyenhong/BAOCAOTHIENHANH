@@ -640,6 +640,11 @@ export const ReportDesigner: React.FC = () => {
                   }}
                   isSearchable
                 />
+                {formSpName && (
+                  <p className="text-[11px] text-amber-800 bg-amber-50/50 border border-amber-200/60 p-2.5 rounded-xl mt-2 leading-relaxed">
+                    💡 <b>Lưu ý:</b> Nếu Stored Procedure này phức tạp (dùng bảng tạm hoặc rẽ nhánh), số lượng cột ở tab <b>Mapping</b> có thể bị hiển thị thiếu. Bạn chỉ cần sang tab <b>Tham số</b> &rarr; bấm <b>▶️ Chạy thử</b> để tự động quét đầy đủ 100% cột chính xác.
+                  </p>
+                )}
               </div>
             </div>
             <Input label="Mô tả" value={formDesc} onChange={e => setFormDesc(e.target.value)} />
