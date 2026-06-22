@@ -790,6 +790,20 @@ export const ReportDesigner: React.FC = () => {
               )}
             </div>
 
+            {/* Mẹo nhận diện đầy đủ cột */}
+            <div className="text-[11px] text-amber-800 bg-amber-50/50 border border-amber-200/60 p-3 rounded-xl flex items-start gap-2 leading-relaxed">
+              <span className="text-sm mt-0.5">💡</span>
+              <div>
+                <p className="font-bold text-amber-900">Mẹo nhận diện đầy đủ cột:</p>
+                <p className="mt-0.5 text-amber-800/90">Nếu Stored Procedure phức tạp (sử dụng bảng tạm <code>#temp</code> hoặc kiểm tra tham số nghiêm ngặt) khiến nút <b>Auto-detect</b> không hiển thị đủ cột, bạn chỉ cần:</p>
+                <ol className="list-decimal list-inside mt-1 space-y-0.5 text-amber-800/85">
+                  <li>Điền giá trị mặc định cho các tham số tại tab <b>Tham số</b>.</li>
+                  <li>Bấm nút <b>▶️ Chạy thử</b> ở phía dưới giao diện thiết kế để thực thi thực tế Stored Procedure.</li>
+                  <li>Hệ thống sẽ tự động quét tập kết quả trả về và điền chính xác 100% cột vào danh sách Mapping này.</li>
+                </ol>
+              </div>
+            </div>
+
             {/* Result set picker */}
             {showResultSetPicker && (
               <div className="flex items-center gap-3 p-3 bg-indigo-50 border border-indigo-200 rounded-xl">

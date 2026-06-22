@@ -241,10 +241,16 @@ export class HospitalService {
     const mockParams: Record<string, any> = {};
     for (const p of params) {
       const n = p.name.toLowerCase();
-      if (n.includes('tungay') || n.includes('tunam')) {
+      const typeLower = (p.type || '').toLowerCase();
+      const isDateType = typeLower.includes('date') || typeLower.includes('time');
+      
+      const isStart = n.includes('tungay') || n.includes('tunam') || n.includes('ngaybd') || n.includes('start') || n.includes('from') || n.includes('ngay_bd') || n.includes('tu_ngay');
+      const isEnd = n.includes('denngay') || n.includes('dennam') || n.includes('ngaykt') || n.includes('end') || n.includes('to') || n.includes('ngay_kt') || n.includes('den_ngay');
+
+      if (isStart || (isDateType && !isEnd)) {
         const d = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
         mockParams[p.name] = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      } else if (n.includes('denngay') || n.includes('dennam')) {
+      } else if (isEnd || isDateType) {
         const d = new Date();
         mockParams[p.name] = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
       } else {
@@ -256,7 +262,7 @@ export class HospitalService {
           typeUpper.includes('FLOAT') ||
           typeUpper.includes('REAL')
         ) {
-          mockParams[p.name] = 0;
+          mockParams[p.name] = 1; // Dùng 1 tránh các validation check ID > 0 trong SP
         } else if (
           typeUpper.includes('CHAR') ||
           typeUpper.includes('TEXT') ||
@@ -270,6 +276,7 @@ export class HospitalService {
     }
     return mockParams;
   }
+
 
   // Lấy metadata cột trả về của SP (Hybrid: DMV -> FMTONLY -> ROWCOUNT 1)
   async getSPColumnMetadata(spName: string): Promise<SPColumnMetadata[]> {
