@@ -432,6 +432,93 @@ export const hospitalDb = async (
   params?: Record<string, any>,
   isProcedure = false
 ): Promise<sql.IResult<any>> => {
+  if (process.env.NODE_ENV === 'test_mock') {
+    const cleanQuery = query.trim().replace(/\s+/g, ' ');
+    console.log(`[MockDB] Executing: ${cleanQuery}`);
+    
+    // 1. DMV Query
+    if (cleanQuery.includes('sys.dm_exec_describe_first_result_set_for_object')) {
+      return {
+        recordset: Array.from({ length: 34 }, (_, i) => ({
+          name: `Col_${i + 1}`,
+          system_type_name: 'varchar',
+          max_length: 50,
+          precision: 0,
+          scale: 0,
+          is_nullable: true,
+        })),
+        recordsets: [[]],
+        rowsAffected: [0],
+        output: {},
+      } as any;
+    }
+    
+    // 2. Parameters Query (for SP parameters metadata)
+    if (cleanQuery.includes('sys.parameters')) {
+      return {
+        recordset: [
+          { name: '@TuNgay', type: 'datetime', maxLength: 8, precision: 0, scale: 0, isNullable: true },
+          { name: '@DenNgay', type: 'datetime', maxLength: 8, precision: 0, scale: 0, isNullable: true }
+        ],
+        recordsets: [[]],
+        rowsAffected: [0],
+        output: {},
+      } as any;
+    }
+    
+    // 3. FMTONLY Query (Trigger FMTONLY path)
+    if (cleanQuery.includes('SET FMTONLY ON')) {
+      if (process.env.TEST_MOCK_FAIL_FMTONLY === 'true') {
+        throw new Error('Mock FMTONLY Failure');
+      }
+      const mockColumns: Record<string, any> = {};
+      for (let i = 0; i < 100; i++) {
+        mockColumns[`Col_${i + 1}`] = {
+          name: `Col_${i + 1}`,
+          type: { name: 'varchar' },
+          length: 50,
+          nullable: true,
+        };
+      }
+      const recordset: any = [];
+      recordset.columns = mockColumns;
+      return {
+        recordset,
+        recordsets: [recordset],
+        rowsAffected: [0],
+        output: {},
+      } as any;
+    }
+    
+    // 4. ROWCOUNT 1 Query (Trigger ROWCOUNT 1 path)
+    if (cleanQuery.includes('SET ROWCOUNT 1')) {
+      const mockColumns: Record<string, any> = {};
+      for (let i = 0; i < 100; i++) {
+        mockColumns[`Col_${i + 1}`] = {
+          name: `Col_${i + 1}`,
+          type: { name: 'varchar' },
+          length: 50,
+          nullable: true,
+        };
+      }
+      const recordset: any = [];
+      recordset.columns = mockColumns;
+      return {
+        recordset,
+        recordsets: [recordset],
+        rowsAffected: [0],
+        output: {},
+      } as any;
+    }
+    
+    return {
+      recordset: [],
+      recordsets: [],
+      rowsAffected: [0],
+      output: {},
+    } as any;
+  }
+
   const pool = await getHospitalDbPool();
   const request = pool.request();
   if (params) {

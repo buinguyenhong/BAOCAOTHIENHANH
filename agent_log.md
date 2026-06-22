@@ -18,6 +18,18 @@ Tài liệu này lưu trữ toàn bộ các thay đổi được thực hiện b
 
 ## 📜 Lịch sử thay đổi
 
+### [2026-06-22 10:23] Khắc phục giới hạn nhận diện 34 cột của Stored Procedure
+* **Tác vụ**: Sửa lỗi giao diện thiết kế chỉ nhận diện được tối đa 34 cột báo cáo của các Stored Procedure phức tạp khi sử dụng tính năng "Auto-detect".
+* **Chi tiết thay đổi**:
+  * **Cơ chế Hybrid Metadata**: Nâng cấp phương thức `getSPColumnMetadata` trong [hospital.service.ts](file:///d:/Project/BAOCAOTHIENHANH/BAOCAOTHIENHANH/backend/src/services/hospital.service.ts) để hỗ trợ 3 tầng nhận diện cột:
+    1. Đầu tiên chạy SQL Server DMV `sys.dm_exec_describe_first_result_set_for_object` như mặc định.
+    2. Nếu DMV thất bại hoặc trả về giới hạn (≤ 34 cột), hệ thống sẽ tự động thực hiện **Fallback 1** sử dụng `SET FMTONLY ON` với các tham số giả lập để lấy metadata chính xác từ trình biên dịch.
+    3. Nếu Fallback 1 vẫn thất bại (vì bảng tạm `#temp` không hỗ trợ), hệ thống thực hiện **Fallback 2** chạy dry-run thực tế sử dụng `SET ROWCOUNT 1` ngắt sớm để lấy các cột thực tế mà không gây tải cho máy chủ.
+  * **Helper tham số giả lập**: Tạo hàm `getMockParamValues` để tự động suy luận kiểu dữ liệu tham số và gán giá trị giả lập phù hợp (ví dụ: ngày hiện tại cho tham số ngày tháng, 0 cho số, chuỗi rỗng cho ký tự), đảm bảo việc thực thi dry-run diễn ra thành công không gặp lỗi kiểu dữ liệu.
+* **Trạng thái**: Đã hoàn thành.
+
+---
+
 ### [2026-06-17 13:46] Sửa lỗi mất kết nối MSSQL (Connection is closed)
 * **Tác vụ**: Khắc phục lỗi báo `Connection is closed` khi chạy báo cáo sau một thời gian nhàn rỗi (idle) hoặc gặp sự cố ngắt kết nối mạng.
 * **Chi tiết thay đổi**:

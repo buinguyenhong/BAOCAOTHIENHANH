@@ -236,8 +236,46 @@ export class HospitalService {
     return (result.recordset || []).map((r: any) => ({ name: r.name }));
   }
 
-  // Lấy metadata cột trả về của SP
+  // Tạo các giá trị giả lập cho tham số SP để thực thi dry-run không bị lỗi
+  private getMockParamValues(params: SPParameterMetadata[]): Record<string, any> {
+    const mockParams: Record<string, any> = {};
+    for (const p of params) {
+      const n = p.name.toLowerCase();
+      if (n.includes('tungay') || n.includes('tunam')) {
+        const d = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+        mockParams[p.name] = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      } else if (n.includes('denngay') || n.includes('dennam')) {
+        const d = new Date();
+        mockParams[p.name] = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      } else {
+        const typeUpper = (p.type || '').toUpperCase();
+        if (
+          typeUpper.includes('INT') ||
+          typeUpper.includes('NUMERIC') ||
+          typeUpper.includes('DECIMAL') ||
+          typeUpper.includes('FLOAT') ||
+          typeUpper.includes('REAL')
+        ) {
+          mockParams[p.name] = 0;
+        } else if (
+          typeUpper.includes('CHAR') ||
+          typeUpper.includes('TEXT') ||
+          typeUpper.includes('VARCHAR')
+        ) {
+          mockParams[p.name] = '';
+        } else {
+          mockParams[p.name] = null;
+        }
+      }
+    }
+    return mockParams;
+  }
+
+  // Lấy metadata cột trả về của SP (Hybrid: DMV -> FMTONLY -> ROWCOUNT 1)
   async getSPColumnMetadata(spName: string): Promise<SPColumnMetadata[]> {
+    let dmvColumns: SPColumnMetadata[] = [];
+    
+    // Bước 1: Thử lấy bằng DMV (phân tích tĩnh)
     try {
       const result = await hospitalDb(`
         SELECT
@@ -251,7 +289,7 @@ export class HospitalService {
         WHERE name IS NOT NULL AND name NOT LIKE '@%'
       `, { spName });
 
-      return (result.recordset || []).map((r: any) => ({
+      dmvColumns = (result.recordset || []).map((r: any) => ({
         name: r.name,
         type: r.type,
         maxLength: r.maxLength,
@@ -260,10 +298,100 @@ export class HospitalService {
         isNullable: r.isNullable,
       }));
     } catch (err: any) {
-      console.error('Error getting SP column metadata:', err);
-      throw new Error(`Không thể lấy metadata của ${spName}: ${err.message}`);
+      console.warn(`[getSPColumnMetadata] Static DMV analysis failed for ${spName}:`, err.message);
     }
+
+    // Nếu DMV trả về kết quả hợp lý (> 34 cột), có thể tin tưởng dùng luôn để tối ưu tốc độ
+    if (dmvColumns.length > 34) {
+      return dmvColumns;
+    }
+
+    // Bước 2: Kích hoạt Fallback 1 - dùng SET FMTONLY ON (không thực thi thực sự, biên dịch nhanh)
+    try {
+      const params = await this.getSPParameterMetadata(spName);
+      const mockParams = this.getMockParamValues(params);
+      const cleanSpName = spName.replace(/[\[\]]/g, '');
+      const paramAssignments = params.map(p => `${p.name} = ${p.name}`).join(', ');
+      
+      const query = `SET FMTONLY ON; EXEC [${cleanSpName}] ${paramAssignments}; SET FMTONLY OFF;`;
+      console.log(`[getSPColumnMetadata] Fallback FMTONLY cho ${spName}...`);
+      
+      const result = await hospitalDb(query, mockParams);
+      if (result.recordset && result.recordset.columns) {
+        const fmtonlyColumns: SPColumnMetadata[] = Object.keys(result.recordset.columns).map(colName => {
+          const colInfo = result.recordset.columns[colName];
+          let typeStr = 'varchar';
+          if (colInfo.type) {
+            if (typeof colInfo.type === 'string') {
+              typeStr = colInfo.type;
+            } else if (typeof colInfo.type === 'object') {
+              typeStr = (colInfo.type as any).name || (colInfo.type as any).declaration || 'varchar';
+            }
+          }
+          return {
+            name: colName,
+            type: typeStr,
+            maxLength: colInfo.length ?? 0,
+            precision: colInfo.precision ?? 0,
+            scale: colInfo.scale ?? 0,
+            isNullable: colInfo.nullable ?? true,
+          };
+        });
+
+        if (fmtonlyColumns.length > dmvColumns.length) {
+          console.log(`[getSPColumnMetadata] FMTONLY phát hiện nhiều cột hơn: ${fmtonlyColumns.length} cột (DMV: ${dmvColumns.length} cột).`);
+          return fmtonlyColumns;
+        }
+      }
+    } catch (err: any) {
+      console.warn(`[getSPColumnMetadata] Fallback FMTONLY failed for ${spName}:`, err.message);
+    }
+
+    // Bước 3: Kích hoạt Fallback 2 - dùng SET ROWCOUNT 1 (Dry-run thực tế ngắt sớm)
+    try {
+      const params = await this.getSPParameterMetadata(spName);
+      const mockParams = this.getMockParamValues(params);
+      const cleanSpName = spName.replace(/[\[\]]/g, '');
+      const paramAssignments = params.map(p => `${p.name} = ${p.name}`).join(', ');
+      
+      const query = `SET ROWCOUNT 1; EXEC [${cleanSpName}] ${paramAssignments}; SET ROWCOUNT 0;`;
+      console.log(`[getSPColumnMetadata] Fallback ROWCOUNT 1 cho ${spName}...`);
+      
+      const result = await hospitalDb(query, mockParams);
+      if (result.recordset && result.recordset.columns) {
+        const rowcountColumns: SPColumnMetadata[] = Object.keys(result.recordset.columns).map(colName => {
+          const colInfo = result.recordset.columns[colName];
+          let typeStr = 'varchar';
+          if (colInfo.type) {
+            if (typeof colInfo.type === 'string') {
+              typeStr = colInfo.type;
+            } else if (typeof colInfo.type === 'object') {
+              typeStr = (colInfo.type as any).name || (colInfo.type as any).declaration || 'varchar';
+            }
+          }
+          return {
+            name: colName,
+            type: typeStr,
+            maxLength: colInfo.length ?? 0,
+            precision: colInfo.precision ?? 0,
+            scale: colInfo.scale ?? 0,
+            isNullable: colInfo.nullable ?? true,
+          };
+        });
+
+        if (rowcountColumns.length > dmvColumns.length) {
+          console.log(`[getSPColumnMetadata] ROWCOUNT 1 phát hiện nhiều cột hơn: ${rowcountColumns.length} cột (DMV: ${dmvColumns.length} cột).`);
+          return rowcountColumns;
+        }
+      }
+    } catch (err: any) {
+      console.warn(`[getSPColumnMetadata] Fallback ROWCOUNT 1 failed for ${spName}:`, err.message);
+    }
+
+    // Cuối cùng, trả về kết quả tốt nhất tìm được từ DMV
+    return dmvColumns;
   }
+
 
   // Lấy metadata parameters từ sys.parameters
   async getSPParameterMetadata(spName: string): Promise<SPParameterMetadata[]> {
