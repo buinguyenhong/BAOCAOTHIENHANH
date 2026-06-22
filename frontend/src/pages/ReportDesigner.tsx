@@ -761,31 +761,52 @@ export const ReportDesigner: React.FC = () => {
             <div className="flex items-center gap-3 p-3 bg-amber-50 border border-amber-200 rounded-xl">
               <Button variant="outline" size="sm" loading={spLoading} onClick={async () => {
                 if (!formSpName) { showError('Chọn Stored Procedure ở tab Thông tin trước'); return; }
+                
+                const hasExisting = formParams.length > 0 || formMappings.length > 0;
+                if (hasExisting && !confirm('Hành động này sẽ tải lại và ghi đè toàn bộ tham số cùng mapping hiện tại bằng dữ liệu nhận diện mới. Bạn có chắc chắn muốn tiếp tục?')) {
+                  return;
+                }
+
                 setSpLoading(true);
                 try {
-                  const res = await systemApi.getSPMetadata(formSpName);
+                  const paramsObj: Record<string, any> = {};
+                  for (const p of formParams) {
+                    if (p.paramName && p.defaultValue !== undefined && p.defaultValue !== null && p.defaultValue !== '') {
+                      paramsObj[p.paramName] = p.defaultValue;
+                    }
+                  }
+
+                  const res = await systemApi.getSPMetadata(formSpName, paramsObj);
                   if (res.success && res.data) {
                     setSpMetadata(res.data);
-                    if (!editingReport || editingReport.spName !== formSpName) {
-                      const autoParams: CreateParamDto[] = (res.data.parameters || []).map((p, idx) => ({
-                        paramName: p.name, paramLabel: p.name.replace(/^@/, '').replace(/([A-Z])/g, ' $1').trim(),
-                        paramType: inferParamType(p.type || '', p.name),
-                        sqlType: p.type || null,
-                        maxLength: p.maxLength ?? null, precision: p.precision ?? null, scale: p.scale ?? null,
-                        isNullable: p.isNullable ?? true, hasDefaultValue: false,
-                        valueMode: 'single', optionsSourceType: 'none', options: null, optionsQuery: null, placeholder: null,
-                        defaultValue: null, isRequired: !p.hasDefaultValue && !p.isNullable, displayOrder: idx + 1,
-                      }));
-                      const autoMappings: CreateMappingDto[] = (res.data.columns || []).map((col, idx) => ({
-                        fieldName: col.name, cellAddress: `A${10 + idx}`, mappingType: 'list' as const,
-                        displayOrder: idx + 1, sheetName: availableSheets[0] || undefined,
-                        recordsetIndex: 0, valueType: 'text' as const, formatPattern: null,
-                      }));
-                      setFormParams(autoParams);
-                      setFormMappings(autoMappings);
-                      setAllResultSetMappings({ 0: autoMappings });
-                      success('Đã tự động nhận diện!');
+                    
+                    const autoParams: CreateParamDto[] = (res.data.parameters || []).map((p, idx) => ({
+                      paramName: p.name, paramLabel: p.name.replace(/^@/, '').replace(/([A-Z])/g, ' $1').trim(),
+                      paramType: inferParamType(p.type || '', p.name),
+                      sqlType: p.type || null,
+                      maxLength: p.maxLength ?? null, precision: p.precision ?? null, scale: p.scale ?? null,
+                      isNullable: p.isNullable ?? true, hasDefaultValue: false,
+                      valueMode: 'single', optionsSourceType: 'none', options: null, optionsQuery: null, placeholder: null,
+                      defaultValue: null, isRequired: !p.hasDefaultValue && !p.isNullable, displayOrder: idx + 1,
+                    }));
+                    
+                    const autoMappings: CreateMappingDto[] = (res.data.columns || []).map((col, idx) => ({
+                      fieldName: col.name, cellAddress: `A${10 + idx}`, mappingType: 'list' as const,
+                      displayOrder: idx + 1, sheetName: availableSheets[0] || undefined,
+                      recordsetIndex: 0, valueType: 'text' as const, formatPattern: null,
+                    }));
+                    
+                    setFormParams(autoParams);
+                    setFormMappings(autoMappings);
+                    setAllResultSetMappings({ 0: autoMappings });
+                    
+                    // Hiện log lỗi nếu có để debug
+                    const debug = (res.data as any).debugInfo;
+                    if (debug && (debug.fmtonlyError || debug.rowcountError)) {
+                      console.warn('[Auto-detect Debug]', debug);
                     }
+                    
+                    success('Đã tự động nhận diện thành công!');
                   }
                 } catch { showError('Không lấy được metadata SP'); }
                 finally { setSpLoading(false); }

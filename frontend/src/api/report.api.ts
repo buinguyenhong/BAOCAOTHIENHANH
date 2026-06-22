@@ -132,8 +132,12 @@ export const systemApi = {
     return res.data;
   },
 
-  getSPMetadata: async (spName: string): Promise<ApiResponse<SPMetadata>> => {
-    const res = await api.get<ApiResponse<SPMetadata>>(`/system/sp-metadata/${encodeURIComponent(spName)}`);
+  getSPMetadata: async (spName: string, params?: Record<string, any>): Promise<ApiResponse<SPMetadata>> => {
+    let url = `/system/sp-metadata/${encodeURIComponent(spName)}`;
+    if (params && Object.keys(params).length > 0) {
+      url += `?params=${encodeURIComponent(JSON.stringify(params))}`;
+    }
+    const res = await api.get<ApiResponse<SPMetadata>>(url);
     return res.data;
   },
 

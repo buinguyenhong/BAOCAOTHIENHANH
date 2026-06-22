@@ -32,14 +32,27 @@ router.get(
   async (req: Request, res: Response) => {
     try {
       const { spName } = (req.params as any);
+      
+      const clientParamsStr = req.query.params as string;
+      let clientParams: Record<string, any> = {};
+      if (clientParamsStr) {
+        try {
+          clientParams = JSON.parse(clientParamsStr);
+        } catch { /* ignore */ }
+      }
+
       const [columns, parameters] = await Promise.all([
-        hospitalService.getSPColumnMetadata(spName),
+        hospitalService.getSPColumnMetadata(spName, clientParams),
         hospitalService.getSPParameterMetadata(spName),
       ]);
 
       res.json({
         success: true,
-        data: { columns, parameters },
+        data: { 
+          columns, 
+          parameters,
+          debugInfo: (columns as any).debugInfo 
+        },
       });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });

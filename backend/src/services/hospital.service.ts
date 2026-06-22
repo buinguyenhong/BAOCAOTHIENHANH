@@ -279,8 +279,13 @@ export class HospitalService {
 
 
   // Lấy metadata cột trả về của SP (Hybrid: DMV -> FMTONLY -> ROWCOUNT 1)
-  async getSPColumnMetadata(spName: string): Promise<SPColumnMetadata[]> {
+  async getSPColumnMetadata(spName: string, clientParams: Record<string, any> = {}): Promise<SPColumnMetadata[]> {
     let dmvColumns: SPColumnMetadata[] = [];
+    const debugInfo: any = {
+      dmvCount: 0,
+      fmtonlyAttempted: false,
+      rowcountAttempted: false,
+    };
     
     // Bước 1: Thử lấy bằng DMV (phân tích tĩnh)
     try {
@@ -304,19 +309,33 @@ export class HospitalService {
         scale: r.scale,
         isNullable: r.isNullable,
       }));
+      debugInfo.dmvCount = dmvColumns.length;
     } catch (err: any) {
       console.warn(`[getSPColumnMetadata] Static DMV analysis failed for ${spName}:`, err.message);
+      debugInfo.dmvError = err.message;
     }
 
     // Nếu DMV trả về kết quả hợp lý (> 34 cột), có thể tin tưởng dùng luôn để tối ưu tốc độ
     if (dmvColumns.length > 34) {
-      return dmvColumns;
+      const ret: any = dmvColumns;
+      ret.debugInfo = debugInfo;
+      return ret;
     }
 
     // Bước 2: Kích hoạt Fallback 1 - dùng SET FMTONLY ON (không thực thi thực sự, biên dịch nhanh)
+    debugInfo.fmtonlyAttempted = true;
     try {
       const params = await this.getSPParameterMetadata(spName);
       const mockParams = this.getMockParamValues(params);
+      
+      // Merge client parameters (nếu có) đè lên mockParams
+      for (const [k, v] of Object.entries(clientParams)) {
+        const matched = params.find(p => p.name.toLowerCase() === k.toLowerCase() || p.name.replace(/^@/, '').toLowerCase() === k.replace(/^@/, '').toLowerCase());
+        if (matched && v !== undefined && v !== null && v !== '') {
+          mockParams[matched.name] = v;
+        }
+      }
+
       const cleanSpName = spName.replace(/[\[\]]/g, '');
       const paramAssignments = params.map(p => `${p.name} = ${p.name}`).join(', ');
       
@@ -345,19 +364,33 @@ export class HospitalService {
           };
         });
 
+        debugInfo.fmtonlyCount = fmtonlyColumns.length;
         if (fmtonlyColumns.length > dmvColumns.length) {
           console.log(`[getSPColumnMetadata] FMTONLY phát hiện nhiều cột hơn: ${fmtonlyColumns.length} cột (DMV: ${dmvColumns.length} cột).`);
-          return fmtonlyColumns;
+          const ret: any = fmtonlyColumns;
+          ret.debugInfo = debugInfo;
+          return ret;
         }
       }
     } catch (err: any) {
       console.warn(`[getSPColumnMetadata] Fallback FMTONLY failed for ${spName}:`, err.message);
+      debugInfo.fmtonlyError = err.message;
     }
 
     // Bước 3: Kích hoạt Fallback 2 - dùng SET ROWCOUNT 1 (Dry-run thực tế ngắt sớm)
+    debugInfo.rowcountAttempted = true;
     try {
       const params = await this.getSPParameterMetadata(spName);
       const mockParams = this.getMockParamValues(params);
+      
+      // Merge client parameters (nếu có) đè lên mockParams
+      for (const [k, v] of Object.entries(clientParams)) {
+        const matched = params.find(p => p.name.toLowerCase() === k.toLowerCase() || p.name.replace(/^@/, '').toLowerCase() === k.replace(/^@/, '').toLowerCase());
+        if (matched && v !== undefined && v !== null && v !== '') {
+          mockParams[matched.name] = v;
+        }
+      }
+
       const cleanSpName = spName.replace(/[\[\]]/g, '');
       const paramAssignments = params.map(p => `${p.name} = ${p.name}`).join(', ');
       
@@ -386,17 +419,23 @@ export class HospitalService {
           };
         });
 
+        debugInfo.rowcountCount = rowcountColumns.length;
         if (rowcountColumns.length > dmvColumns.length) {
           console.log(`[getSPColumnMetadata] ROWCOUNT 1 phát hiện nhiều cột hơn: ${rowcountColumns.length} cột (DMV: ${dmvColumns.length} cột).`);
-          return rowcountColumns;
+          const ret: any = rowcountColumns;
+          ret.debugInfo = debugInfo;
+          return ret;
         }
       }
     } catch (err: any) {
       console.warn(`[getSPColumnMetadata] Fallback ROWCOUNT 1 failed for ${spName}:`, err.message);
+      debugInfo.rowcountError = err.message;
     }
 
     // Cuối cùng, trả về kết quả tốt nhất tìm được từ DMV
-    return dmvColumns;
+    const ret: any = dmvColumns;
+    ret.debugInfo = debugInfo;
+    return ret;
   }
 
 
